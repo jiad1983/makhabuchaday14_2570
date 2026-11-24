@@ -20,7 +20,32 @@
 
 ---
 
-## วิธีที่ 2: นำขึ้น GitHub Pages (สำคัญ — แก้ปัญหาหน้าเว็บเป็นจอขาว)
+## วิธีที่ 2: เชื่อมต่อ Git บน Plesk กับ GitHub (แนะนำสำหรับโฮสต์ Plesk)
+
+สามารถเลือกใช้ได้ **2 รูปแบบ** ตามความพร้อมของเซิร์ฟเวอร์ Plesk:
+
+### แบบที่ A: โฮสต์ Plesk ไม่มี Node.js หรือต้องการดึงไฟล์พร้อมแสดงผลทันที (แนะนำที่สุด)
+โปรเจกต์ได้เตรียม GitHub Actions (`.github/workflows/plesk-deploy.yml`) ไว้ให้แล้ว เมื่อคุณ Push โค้ดขึ้น branch `main` (หรือ `master`) GitHub จะ Build โฟลเดอร์ `dist/` และส่งไฟล์พร้อมใช้งานไปยัง branch ชื่อ **`plesk-deploy`** ให้อัตโนมัติ
+
+1. Push โค้ดทั้งหมดขึ้น GitHub (`main` หรือ `master`) แล้วรอให้แท็บ **Actions** รัน `Build Plesk Deploy Branch` สำเร็จ (สีเขียว)
+2. ในหน้า **Plesk → Websites & Domains → Git**:
+   - เลือก **Remote Git hosting (GitHub)** แล้วใส่ลิงก์ Repository
+   - ช่อง **Branch** ให้เลือกเป็น **`plesk-deploy`**
+   - ช่อง **Deployment path** ใช้ค่าเริ่มต้น `/httpdocs` ได้ทันที
+   - กด **OK / Pull Updates** เว็บไซต์จะแสดงผลได้ทันทีโดยไม่ต้องติดตั้ง Node.js บน Plesk
+
+### แบบที่ B: โฮสต์ Plesk เชื่อมต่อตรงกับ branch `main` และมี Node.js บน Plesk
+1. ในหน้า **Plesk → Websites & Domains → Git**:
+   - เชื่อมต่อ Repository และเลือก branch **`main`**
+   - เปิด **Enable additional deployment actions** แล้วใส่คำสั่ง:
+     ```bash
+     bash plesk-deploy.sh
+     ```
+2. เว็บไซต์รองรับได้ทั้งกรณีตั้ง **Hosting Settings → Document root** เป็น `/httpdocs/dist` หรือใช้ค่าเริ่มต้น `/httpdocs` (ไฟล์ `.htaccess` ที่ Root จะส่งคำขอไปยัง `dist/` และป้องกันการเข้าถึงไฟล์ซอร์สโค้ดให้อัตโนมัติ)
+
+---
+
+## วิธีที่ 3: นำขึ้น GitHub Pages (สำคัญ — แก้ปัญหาหน้าเว็บเป็นจอขาว)
 
 **สาเหตุที่เปิดแล้วเป็นจอขาว:** หากตั้งค่า GitHub Pages เป็น `Deploy from a branch (main / root)` ระบบจะไปเปิดไฟล์ `index.html` ต้นฉบับที่ชี้ไปยัง `/src/main.tsx` ซึ่งเบราว์เซอร์ไม่สามารถรันไฟล์ TypeScript/JSX โดยตรงได้ (และโฟลเดอร์ `dist/` ไม่ได้ถูกเก็บใน Git)
 
@@ -32,7 +57,7 @@
 
 ---
 
-## วิธีที่ 3: นำขึ้น Netlify / Vercel / Cloudflare Pages
+## วิธีที่ 4: นำขึ้น Netlify / Vercel / Cloudflare Pages
 
 - **Build command:** `npm run build`
 - **Output / Publish directory:** `dist`
@@ -40,7 +65,7 @@
 
 ---
 
-## วิธีที่ 4: รันบน Node.js Hosting (VPS / Render / Railway / Cloud Run)
+## วิธีที่ 5: รันบน Node.js Hosting (VPS / Render / Railway / Cloud Run)
 
 1. ติดตั้ง Dependencies และ Build หน้าเว็บ:
    ```bash
