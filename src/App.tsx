@@ -1260,12 +1260,12 @@ function buildPrintableHtmlDoc(
         <div class="sheet-wrap">
           ${thaiBodyHtml}
         </div>
-        <script>
+        ${'<scr' + 'ipt>'}
           function triggerPdfPrint() {
             window.focus();
             window.print();
           }
-        </script>
+        ${'</scr' + 'ipt>'}
       </body>
       </html>
     `;

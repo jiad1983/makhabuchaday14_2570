@@ -1,0 +1,14 @@
+DirectoryIndex index.html
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  # Protect repository source & configuration files if Document Root is /httpdocs
+  RewriteCond %{DOCUMENT_ROOT}/dist/index.html -f
+  RewriteRule ^(\.git|\.github|src/(App\.tsx|main\.tsx|index\.css|shared)|node_modules|data|server\.ts|package(-lock)?\.json|tsconfig\.json|vite\.config\.ts|plesk-deploy\.sh|\.env) - [F,L]
+
+  # Automatically serve built dist/ when Plesk Document Root is kept at /httpdocs
+  RewriteCond %{DOCUMENT_ROOT}/dist/index.html -f
+  RewriteCond %{REQUEST_URI} !^/dist/
+  RewriteRule ^(.*)$ dist/$1 [L]
+</IfModule>
