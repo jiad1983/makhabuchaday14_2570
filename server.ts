@@ -1361,23 +1361,7 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distDir = path.resolve(process.cwd(), 'dist');
-    app.use(
-      express.static(distDir, {
-        setHeaders: (res, filePath) => {
-          if (filePath.endsWith('.js') || filePath.endsWith('.mjs')) {
-            res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-          } else if (filePath.endsWith('.css')) {
-            res.setHeader('Content-Type', 'text/css; charset=utf-8');
-          } else if (filePath.endsWith('.wasm')) {
-            res.setHeader('Content-Type', 'application/wasm');
-          } else if (filePath.endsWith('.svg')) {
-            res.setHeader('Content-Type', 'image/svg+xml');
-          } else if (filePath.endsWith('.json')) {
-            res.setHeader('Content-Type', 'application/json; charset=utf-8');
-          }
-        },
-      }),
-    );
+    app.use(express.static(distDir));
     app.get('*', (_req, res) => {
       res.sendFile(path.resolve(distDir, 'index.html'));
     });
