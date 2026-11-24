@@ -1,0 +1,283 @@
+{
+  "settings": {
+    "registrationOpen": true,
+    "eventName": "งานสัปดาห์ส่งเสริมวันสำคัญทางพระพุทธศาสนา วันมาฆบูชา ครั้งที่ ๑๔",
+    "eventSubtitle": "ประจำปี ๒๕๗๐",
+    "eventDateText": "วันที่ 17 กุมภาพันธ์ 2570",
+    "organizerName": "คณะกรรมการดำเนินงานสัปดาห์ส่งเสริมวันสำคัญทางพระพุทธศาสนา วันมาฆบูชา"
+  },
+  "templates": {},
+  "schedules": [
+    {
+      "competitionId": "dhamma-lecture",
+      "level": "ประถมปลาย (ป.๔-๖)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "dhamma-lecture",
+      "level": "มัธยมต้น (ม.๑-๓)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "dhamma-lecture",
+      "level": "มัธยมปลาย (ม.๔-๖)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "dhamma-storytelling",
+      "level": "ประถมปลาย (ป.๔-๖)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "dhamma-storytelling",
+      "level": "มัธยมต้น (ม.๑-๓)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "dhamma-storytelling",
+      "level": "มัธยมปลาย (ม.๔-๖)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "lukthung-male",
+      "level": "ประถมปลาย (ป.๔-๖)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "lukthung-male",
+      "level": "มัธยมต้น (ม.๑-๓)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "lukthung-male",
+      "level": "มัธยมปลาย (ม.๔-๖)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "lukthung-female",
+      "level": "ประถมปลาย (ป.๔-๖)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "lukthung-female",
+      "level": "มัธยมต้น (ม.๑-๓)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "lukthung-female",
+      "level": "มัธยมปลาย (ม.๔-๖)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "line-drawing",
+      "level": "ประถมปลาย (ป.๔-๖)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "line-drawing",
+      "level": "มัธยมต้น (ม.๑-๓)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "line-drawing",
+      "level": "มัธยมปลาย (ม.๔-๖)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "dhamma-essay",
+      "level": "ประถมปลาย (ป.๔-๖)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "dhamma-essay",
+      "level": "มัธยมต้น (ม.๑-๓)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "dhamma-essay",
+      "level": "มัธยมปลาย (ม.๔-๖)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "dhamma-quiz",
+      "level": "ประถมปลาย (ป.๔-๖)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "dhamma-quiz",
+      "level": "มัธยมต้น (ม.๑-๓)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "dhamma-quiz",
+      "level": "มัธยมปลาย (ม.๔-๖)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "buddhist-ceremony",
+      "level": "ประถมปลาย (ป.๔-๖)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "buddhist-ceremony",
+      "level": "มัธยมต้น (ม.๑-๓)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "buddhist-ceremony",
+      "level": "มัธยมปลาย (ม.๔-๖)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "saraphanya-chanting",
+      "level": "ประถมปลาย (ป.๔-๖)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "saraphanya-chanting",
+      "level": "มัธยมต้น (ม.๑-๓)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "saraphanya-chanting",
+      "level": "มัธยมปลาย (ม.๔-๖)",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    },
+    {
+      "competitionId": "altar-table-7",
+      "level": "ไม่จำกัดระดับ",
+      "venue": "",
+      "dateText": "18 กุมภาพันธ์ 2570",
+      "timeText": "09:00 - 12:00 น.",
+      "notes": ""
+    }
+  ],
+  "schools": [
+    {
+      "id": "sch_3b04d8f4-65af-477f-a891-3602d484045c",
+      "schoolCode": "70320091104",
+      "schoolName": "โรงเรียนพระปริยัติธรรมพันษีวิทยา",
+      "directorName": "พระมหาเจริญสุข คุณวีโร",
+      "phone": "",
+      "passwordHash": "760e2f0a602ec560332acca4afd75f94:ed4cccda5eccfe7e9a7c600bf8b86c7421e1d512f9eafa531893b219f713f595e7196f5733c177813b2865c8e5be92e90bbd27c19554e20823fb78811632248e",
+      "createdAt": "2026-11-23T04:45:46.386Z"
+    }
+  ],
+  "judges": [],
+  "registrations": [
+    {
+      "id": "reg_18fec168-0c45-45a6-b1a3-a191e2051dea",
+      "schoolId": "sch_3b04d8f4-65af-477f-a891-3602d484045c",
+      "competitionId": "dhamma-quiz",
+      "level": "มัธยมต้น (ม.๑-๓)",
+      "teamName": "",
+      "students": [
+        {
+          "id": "stu_1795409163048_0",
+          "fullName": "สามเณรอภิชาติ บุญหวัง",
+          "grade": "ม.2",
+          "photoUrl": ""
+        },
+        {
+          "id": "stu_1795409165931_1",
+          "fullName": "สามเณรปัณณธร  แจ่มแจ้ง",
+          "grade": "ม.3",
+          "photoUrl": ""
+        }
+      ],
+      "coaches": [
+        {
+          "id": "coa_1795409163048_0",
+          "fullName": "พระบุญทัน  ธมฺมธาตา",
+          "position": "ครูผู้ฝึกสอน",
+          "photoUrl": ""
+        }
+      ],
+      "createdAt": "2026-11-23T04:46:59.857Z",
+      "updatedAt": "2026-11-23T04:46:59.857Z"
+    }
+  ],
+  "scores": [],
+  "approvals": []
+}

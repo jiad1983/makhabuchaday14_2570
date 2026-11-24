@@ -1,0 +1,8 @@
+{
+  "name": " Makhabuchaday Competition Management System",
+  "description": "ระบบบริหารจัดการการแข่งขันงานสัปดาห์ส่งเสริมวันสำคัญทางพระพุทธศาสนา วันมาฆบูชา ครั้งที่ ๑๔ ประจำปี ๒๕๗๐ (วันที่ 18 กุมภาพันธ์ 2570)",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
