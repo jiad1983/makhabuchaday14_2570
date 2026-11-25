@@ -614,26 +614,33 @@ export function createAppStoreRouter(options: {
     return Boolean(req.secure || proto.includes('https') || req.headers['x-forwarded-ssl'] === 'on');
   }
 
-  function setSessionCookie(req: Request, res: Response, token: string): void {
+  function buildCookieSameSite(req: Request): string {
     const isHttps = isHttpsRequest(req);
+    const secFetchSite = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+    if (isHttps && secFetchSite === 'cross-site') {
+      return 'SameSite=None; Secure; Partitioned';
+    }
+    return isHttps ? 'SameSite=Lax; Secure' : 'SameSite=Lax';
+  }
+
+  function setSessionCookie(req: Request, res: Response, token: string): void {
     const attrs = [
       `${COOKIE_NAME}=${encodeURIComponent(token)}`,
       'Path=/',
       'HttpOnly',
       `Max-Age=${SESSION_TTL_SEC}`,
-      isHttps ? 'SameSite=None; Secure; Partitioned' : 'SameSite=Lax',
+      buildCookieSameSite(req),
     ];
     res.setHeader('Set-Cookie', attrs.join('; '));
   }
 
   function clearSessionCookie(req: Request, res: Response): void {
-    const isHttps = isHttpsRequest(req);
     const attrs = [
       `${COOKIE_NAME}=`,
       'Path=/',
       'HttpOnly',
       'Max-Age=0',
-      isHttps ? 'SameSite=None; Secure; Partitioned' : 'SameSite=Lax',
+      buildCookieSameSite(req),
     ];
     res.setHeader('Set-Cookie', attrs.join('; '));
   }
@@ -647,22 +654,37 @@ export function createAppStoreRouter(options: {
       judgeId: null,
     };
 
+    const candidates: string[] = [];
+
+    const xAppToken = typeof req.headers['x-app-token'] === 'string' ? req.headers['x-app-token'].trim() : '';
+    if (xAppToken) {
+      candidates.push(xAppToken);
+    }
+
     const authHeader = req.headers.authorization;
-    let candidateToken = '';
-    let viaBearer = false;
     if (authHeader && authHeader.startsWith('Bearer ')) {
-      candidateToken = authHeader.slice(7).trim();
-      viaBearer = true;
-    } else {
-      const cookies = parseCookies(req.headers.cookie);
-      candidateToken = cookies[COOKIE_NAME] || '';
-      if (candidateToken && isMutation && req.headers['x-requested-with'] !== 'XMLHttpRequest') {
-        return guest;
+      const bearer = authHeader.slice(7).trim();
+      if (bearer && !candidates.includes(bearer)) {
+        candidates.push(bearer);
       }
     }
 
-    if (!candidateToken) return guest;
-    const verified = verifyAppToken(candidateToken);
+    const cookies = parseCookies(req.headers.cookie);
+    const cookieToken = cookies[COOKIE_NAME] || '';
+    if (cookieToken && (!isMutation || req.headers['x-requested-with'] === 'XMLHttpRequest')) {
+      if (!candidates.includes(cookieToken)) {
+        candidates.push(cookieToken);
+      }
+    }
+
+    let verified: AppSessionUser | null = null;
+    for (const cand of candidates) {
+      const parsed = verifyAppToken(cand);
+      if (parsed) {
+        verified = parsed;
+        break;
+      }
+    }
     if (!verified) return guest;
 
     // Validate active record
@@ -679,7 +701,6 @@ export function createAppStoreRouter(options: {
     if (verified.role === 'admin') {
       return { ...verified, displayName: appState.adminCredentials.displayName };
     }
-    void viaBearer;
     return guest;
   }
 

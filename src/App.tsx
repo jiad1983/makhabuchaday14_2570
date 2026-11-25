@@ -1989,8 +1989,11 @@ export default function App() {
     const headers: Record<string, string> = {
       'X-Requested-With': 'XMLHttpRequest'
     };
-    if (apiTokenRef.current) {
-      headers.Authorization = `Bearer ${apiTokenRef.current}`;
+    const activeToken = apiTokenRef.current || readStoredSessionToken();
+    if (activeToken) {
+      apiTokenRef.current = activeToken;
+      headers.Authorization = `Bearer ${activeToken}`;
+      headers['X-App-Token'] = activeToken;
     }
     if (method === 'POST') {
       headers['Content-Type'] = 'application/json';
@@ -2054,8 +2057,11 @@ export default function App() {
   const handleDownloadServerBackup = async () => {
     try {
       const headers: Record<string, string> = { 'X-Requested-With': 'XMLHttpRequest' };
-      if (apiTokenRef.current) {
-        headers.Authorization = `Bearer ${apiTokenRef.current}`;
+      const activeToken = apiTokenRef.current || readStoredSessionToken();
+      if (activeToken) {
+        apiTokenRef.current = activeToken;
+        headers.Authorization = `Bearer ${activeToken}`;
+        headers['X-App-Token'] = activeToken;
       }
       const resp = await fetch(getAppApiUrl('/admin/backup'), {
         method: 'GET',
@@ -2096,6 +2102,7 @@ export default function App() {
         if (storedTok) {
           apiTokenRef.current = storedTok;
           headers.Authorization = `Bearer ${storedTok}`;
+          headers['X-App-Token'] = storedTok;
         }
         const resp = await fetch(getAppApiUrl('/bootstrap'), {
           credentials: 'include',

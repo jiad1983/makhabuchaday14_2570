@@ -51,8 +51,17 @@ function loadOrCreateSessionSecret(): string {
   }
   const generated = crypto.randomBytes(32).toString('hex');
   try {
-    fs.writeFileSync(secretFile, generated, { encoding: 'utf-8', mode: 0o600 });
-  } catch {
+    fs.writeFileSync(secretFile, generated, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
+    return generated;
+  } catch (err: any) {
+    if (err?.code === 'EEXIST') {
+      try {
+        const existing = fs.readFileSync(secretFile, 'utf-8').trim();
+        if (existing.length >= 32) return existing;
+      } catch {
+        // ignore
+      }
+    }
     // fallback in memory if filesystem is read-only
   }
   return generated;
