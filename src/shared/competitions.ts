@@ -1,4 +1,4 @@
-import type { CompetitionDef, CompetitionLevel } from './types';
+import type { CompetitionDef, CompetitionLevel } from './types.ts';
 
 export const STANDARD_LEVELS: CompetitionLevel[] = [
   'ประถมปลาย (ป.๔-๖)',

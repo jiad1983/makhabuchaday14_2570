@@ -1918,6 +1918,20 @@ export default function App() {
     setStorageStats(srv.storageStats && typeof srv.storageStats === 'object' ? (srv.storageStats as StorageStats) : null);
   };
 
+  const getAppApiUrl = (endpoint: string): string => {
+    const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+    if (typeof window !== 'undefined' && window.location) {
+      const path = window.location.pathname || '/';
+      const basePath = path.endsWith('/')
+        ? path
+        : path.endsWith('/index.html')
+        ? path.slice(0, -'index.html'.length)
+        : '/';
+      return `${basePath}api/app${cleanEndpoint}`;
+    }
+    return `/api/app${cleanEndpoint}`;
+  };
+
   const appApiCall = async <T = Record<string, any>>(
     endpoint: string,
     body?: unknown,
@@ -1932,13 +1946,21 @@ export default function App() {
     if (method === 'POST') {
       headers['Content-Type'] = 'application/json';
     }
-    const resp = await fetch(`/api/app${endpoint}`, {
+    const resp = await fetch(getAppApiUrl(endpoint), {
       method,
       credentials: 'include',
       headers,
       body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined
     });
-    const data = await resp.json().catch(() => ({}));
+    const contentType = resp.headers.get('content-type') || '';
+    const isJson = contentType.includes('application/json');
+    const data = isJson ? await resp.json().catch(() => ({})) : {};
+    if (resp.status === 404 || (resp.ok && !isJson)) {
+      throw new Error(
+        data?.error ||
+          'ไม่พบระบบหลังบ้านบนเซิร์ฟเวอร์ (404) — หากใช้งานบนโฮสต์ PHP กรุณาอัปโหลดไฟล์ในโฟลเดอร์ php-app/ หรือรันเซิร์ฟเวอร์ Node.js ด้วยคำสั่ง npm start'
+      );
+    }
     if (!resp.ok || data?.ok === false) {
       throw new Error(data?.error || `เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์ (${resp.status})`);
     }
@@ -1985,7 +2007,7 @@ export default function App() {
       if (apiTokenRef.current) {
         headers.Authorization = `Bearer ${apiTokenRef.current}`;
       }
-      const resp = await fetch('/api/app/admin/backup', {
+      const resp = await fetch(getAppApiUrl('/admin/backup'), {
         method: 'GET',
         credentials: 'include',
         headers
@@ -2019,7 +2041,7 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
-        const resp = await fetch('/api/app/bootstrap', { credentials: 'include' });
+        const resp = await fetch(getAppApiUrl('/bootstrap'), { credentials: 'include' });
         if (!resp.ok || cancelled) return;
         const data = await resp.json();
         if (!cancelled && data?.ok && data?.state) {

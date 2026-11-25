@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import express, { Request, Response, Router } from 'express';
+import express, { type Request, type Response, type Router } from 'express';
 import fs from 'fs';
 import path from 'path';
 

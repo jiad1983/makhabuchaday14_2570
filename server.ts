@@ -1,11 +1,11 @@
 import crypto from 'crypto';
 import dotenv from 'dotenv';
-import express, { NextFunction, Request, Response } from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
-import { createAppStoreRouter, UPLOAD_CATEGORIES } from './src/server/appStore';
-import { COMPETITIONS, getCompetitionById } from './src/shared/competitions';
+import { createAppStoreRouter, UPLOAD_CATEGORIES } from './src/server/appStore.ts';
+import { COMPETITIONS, getCompetitionById } from './src/shared/competitions.ts';
 import type {
   ActivityLevelSummary,
   AuthUser,
@@ -22,7 +22,7 @@ import type {
   StudentMember,
   SystemSettings,
   TemplateSettings,
-} from './src/shared/types';
+} from './src/shared/types.ts';
 
 dotenv.config();
 
@@ -1385,14 +1385,18 @@ async function startServer() {
   });
 
   // Vite middleware in development, static files in production
-  if (process.env.NODE_ENV !== 'production') {
+  const distDir = path.resolve(process.cwd(), 'dist');
+  const hasBuiltDist = fs.existsSync(path.resolve(distDir, 'index.html'));
+  const isDevLifecycle = process.env.npm_lifecycle_event === 'dev' || process.env.NODE_ENV === 'development';
+  const isProductionMode = process.env.NODE_ENV === 'production' || (!isDevLifecycle && hasBuiltDist);
+
+  if (!isProductionMode) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    const distDir = path.resolve(process.cwd(), 'dist');
     app.use(
       express.static(distDir, {
         setHeaders: (res, filePath) => {
