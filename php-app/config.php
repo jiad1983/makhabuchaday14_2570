@@ -8,7 +8,7 @@ define('DB_FILE', DATA_DIR . DIRECTORY_SEPARATOR . 'db.json');
 
 define('EVENT_DATE_TH', 'วันพุธที่ 17 กุมภาพันธ์ พ.ศ. 2570');
 define('EVENT_TITLE_TH', 'งานสัปดาห์ส่งเสริมวันสำคัญทางพระพุทธศาสนาวันมาฆบูชา ครั้งที่ 14 ประจำปี 2570');
-define('EVENT_VENUE_TH', 'โรงเรียนบ้านหนองบัว ตำบลหนองบัว อำเภอศีขรภูมิ จังหวัดสุรินทร์');
+define('EVENT_VENUE_TH', 'วัดหนองบัว ตำบลหนองบัว อำเภอศีขรภูมิ จังหวัดสุรินทร์');
 
 define('UPLOAD_CATEGORIES', ['students', 'coaches', 'judges', 'backgrounds']);
 

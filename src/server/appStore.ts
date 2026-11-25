@@ -7,7 +7,7 @@ export const UPLOAD_CATEGORIES = ['students', 'coaches', 'judges', 'backgrounds'
 export type UploadCategory = (typeof UPLOAD_CATEGORIES)[number];
 
 const EVENT_DATE_TH = 'วันพุธที่ 17 กุมภาพันธ์ พ.ศ. 2570';
-const EVENT_VENUE_TH = 'โรงเรียนบ้านหนองบัว ตำบลหนองบัว อำเภอศีขรภูมิ จังหวัดสุรินทร์';
+const EVENT_VENUE_TH = 'วัดหนองบัว ตำบลหนองบัว อำเภอศีขรภูมิ จังหวัดสุรินทร์';
 
 const LEVELS_STANDARD = [
   'ประถมศึกษาตอนปลาย (ป.4-ป.6)',
