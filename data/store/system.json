@@ -1,0 +1,24 @@
+{
+  "adminCredentials": {
+    "username": "admin",
+    "passwordHash": "7a8dcd0055116d19ee757e5c0e56cae1:3084048ab9fd4923328f9ad666dd280ac182eaeaf238d241b8634784de6ecfe00dce0a5c554a50694f34abd73537edd0e0b5422aa79a4a28c653b63e0d4d923c",
+    "displayName": "พระบุญทัน ธมฺมธาตา (Admin)"
+  },
+  "registrationOpen": true,
+  "menuPermissions": {
+    "student-card": true,
+    "coach-card": true,
+    "judge-card": true,
+    "judge-cert": true,
+    "school-cert": true,
+    "school-results": true,
+    "results": true
+  },
+  "backgrounds": {
+    "bannerBgUrl": "",
+    "studentCardBgUrl": "",
+    "coachCardBgUrl": "",
+    "judgeCardBgUrl": "",
+    "certBgUrl": ""
+  }
+}

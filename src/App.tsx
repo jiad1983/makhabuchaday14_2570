@@ -174,6 +174,19 @@ interface AdminCredentials {
   displayName: string;
 }
 
+interface StorageStats {
+  totalUploadFiles: number;
+  totalUploadBytes: number;
+  categories: Record<string, { files: number; bytes: number }>;
+  collections: {
+    schools: number;
+    judges: number;
+    registrations: number;
+    schedules: number;
+    scores: number;
+  };
+}
+
 interface PrintPreviewDocument {
   title: string;
   bodyHtml: string;
@@ -182,10 +195,6 @@ interface PrintPreviewDocument {
   htmlDoc: string;
 }
 
-const STORAGE_KEY = 'makhapuja_2570_dashboard_v1';
-const CORE_STORAGE_KEY = 'makhapuja_2570_core_v1';
-const SESSION_STORAGE_KEY = 'makhapuja_2570_session_v1';
-
 type BackgroundKey =
   | 'bannerBgUrl'
   | 'studentCardBgUrl'
@@ -193,121 +202,16 @@ type BackgroundKey =
   | 'judgeCardBgUrl'
   | 'certBgUrl';
 
-const BG_STORAGE_KEYS: Record<BackgroundKey, string> = {
-  bannerBgUrl: 'makhapuja_2570_bg_banner',
-  studentCardBgUrl: 'makhapuja_2570_bg_student_card',
-  coachCardBgUrl: 'makhapuja_2570_bg_coach_card',
-  judgeCardBgUrl: 'makhapuja_2570_bg_judge_card',
-  certBgUrl: 'makhapuja_2570_bg_cert'
-};
-
-const MEDIA_DB_NAME = 'makhapuja_2570_media_db';
-const MEDIA_STORE_NAME = 'backgrounds';
-
-function openMediaDb(): Promise<IDBDatabase | null> {
-  if (typeof window === 'undefined' || typeof window.indexedDB === 'undefined') {
-    return Promise.resolve(null);
-  }
-  return new Promise((resolve) => {
-    try {
-      const req = window.indexedDB.open(MEDIA_DB_NAME, 1);
-      req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains(MEDIA_STORE_NAME)) {
-          db.createObjectStore(MEDIA_STORE_NAME, { keyPath: 'key' });
-        }
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => resolve(null);
-      req.onblocked = () => resolve(null);
-    } catch {
-      resolve(null);
-    }
-  });
-}
-
-async function saveBackgroundToIdb(key: BackgroundKey, dataUrl: string): Promise<boolean> {
-  const db = await openMediaDb();
-  if (!db) return false;
-  return await new Promise<boolean>((resolve) => {
-    try {
-      const tx = db.transaction(MEDIA_STORE_NAME, 'readwrite');
-      const store = tx.objectStore(MEDIA_STORE_NAME);
-      if (dataUrl) {
-        store.put({ key, dataUrl, updatedAt: Date.now() });
-      } else {
-        store.delete(key);
-      }
-      tx.oncomplete = () => {
-        db.close();
-        resolve(true);
-      };
-      tx.onerror = () => {
-        db.close();
-        resolve(false);
-      };
-      tx.onabort = () => {
-        db.close();
-        resolve(false);
-      };
-    } catch {
-      db.close();
-      resolve(false);
-    }
-  });
-}
-
-async function loadAllBackgroundsFromIdb(): Promise<Partial<Record<BackgroundKey, string>>> {
-  const db = await openMediaDb();
-  if (!db) return {};
-  return await new Promise<Partial<Record<BackgroundKey, string>>>((resolve) => {
-    try {
-      const tx = db.transaction(MEDIA_STORE_NAME, 'readonly');
-      const store = tx.objectStore(MEDIA_STORE_NAME);
-      const req = store.getAll();
-      req.onsuccess = () => {
-        const result: Partial<Record<BackgroundKey, string>> = {};
-        const items = Array.isArray(req.result) ? req.result : [];
-        items.forEach((item: { key?: string; dataUrl?: string }) => {
-          if (item?.key && typeof item.dataUrl === 'string' && item.key in BG_STORAGE_KEYS) {
-            result[item.key as BackgroundKey] = item.dataUrl;
-          }
-        });
-        db.close();
-        resolve(result);
-      };
-      req.onerror = () => {
-        db.close();
-        resolve({});
-      };
-    } catch {
-      db.close();
-      resolve({});
-    }
-  });
-}
-
-function saveBackgroundCache(key: BackgroundKey, dataUrl: string): boolean {
-  try {
-    const lsKey = BG_STORAGE_KEYS[key];
-    if (!dataUrl) {
-      localStorage.removeItem(lsKey);
-    } else {
-      localStorage.setItem(lsKey, dataUrl);
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function loadBackgroundCache(key: BackgroundKey): string {
-  try {
-    return localStorage.getItem(BG_STORAGE_KEYS[key]) || '';
-  } catch {
-    return '';
-  }
-}
+const LEGACY_LOCAL_KEYS = [
+  'makhapuja_2570_dashboard_v1',
+  'makhapuja_2570_core_v1',
+  'makhapuja_2570_session_v1',
+  'makhapuja_2570_bg_banner',
+  'makhapuja_2570_bg_student_card',
+  'makhapuja_2570_bg_coach_card',
+  'makhapuja_2570_bg_judge_card',
+  'makhapuja_2570_bg_cert'
+];
 
 async function compressImageFile(file: File, maxDimension = 640, quality = 0.82): Promise<string> {
   const rawDataUrl = await new Promise<string>((resolve, reject) => {
@@ -534,7 +438,7 @@ const INITIAL_SCHOOLS: SchoolItem[] = [
   {
     id: 'sch-10112201',
     schoolCode: '10112201',
-    password: '1234',
+    password: '',
     name: 'โรงเรียนสุรินทร์ธรรมวิทยาคม',
     director: 'นายสมชาย ใจดีมีธรรม',
     phone: '044-511-234'
@@ -542,7 +446,7 @@ const INITIAL_SCHOOLS: SchoolItem[] = [
   {
     id: 'sch-10112202',
     schoolCode: '10112202',
-    password: '1234',
+    password: '',
     name: 'โรงเรียนศรีณรงค์พุทธอุปถัมภ์',
     director: 'นางสาววิภาดา รักสงบ',
     phone: '044-512-890'
@@ -550,7 +454,7 @@ const INITIAL_SCHOOLS: SchoolItem[] = [
   {
     id: 'sch-10112203',
     schoolCode: '10112203',
-    password: '1234',
+    password: '',
     name: 'โรงเรียนปราสาทปัญญาคุณ',
     director: 'นายเกรียงไกร บุญญารักษ์',
     phone: '044-513-456'
@@ -561,7 +465,7 @@ const INITIAL_JUDGES: JudgeItem[] = [
   {
     id: 'jdg-1',
     username: 'judge1',
-    password: '1234',
+    password: '',
     name: 'พระมหาสมปอง ปัญญาธโร',
     position: 'ประธานกรรมการตัดสิน',
     competitionId: 'comp-1',
@@ -571,7 +475,7 @@ const INITIAL_JUDGES: JudgeItem[] = [
   {
     id: 'jdg-2',
     username: 'judge2',
-    password: '1234',
+    password: '',
     name: 'ดร.กัญญาณี สุนทรธรรม',
     position: 'กรรมการตัดสิน',
     competitionId: 'comp-1',
@@ -581,7 +485,7 @@ const INITIAL_JUDGES: JudgeItem[] = [
   {
     id: 'jdg-3',
     username: 'judge3',
-    password: '1234',
+    password: '',
     name: 'อาจารย์ธนวัฒน์ ศรีสวัสดิ์',
     position: 'กรรมการตัดสิน',
     competitionId: 'comp-1',
@@ -591,7 +495,7 @@ const INITIAL_JUDGES: JudgeItem[] = [
   {
     id: 'jdg-4',
     username: 'judge4',
-    password: '1234',
+    password: '',
     name: 'นางสาวพิมพ์ชนก วรรณศิลป์',
     position: 'กรรมการตัดสิน',
     competitionId: 'comp-1',
@@ -601,7 +505,7 @@ const INITIAL_JUDGES: JudgeItem[] = [
   {
     id: 'jdg-5',
     username: 'judge5',
-    password: '1234',
+    password: '',
     name: 'ครูสุรศักดิ์ เสียงไพเราะ',
     position: 'ประธานกรรมการตัดสิน',
     competitionId: 'comp-3',
@@ -1276,77 +1180,25 @@ function buildPrintableHtmlDoc(
 // ============================================================================
 
 export default function App() {
-  const savedState = useMemo<Record<string, any> | null>(() => {
-    const isPlainObj = (v: unknown): v is Record<string, unknown> =>
-      typeof v === 'object' && v !== null && !Array.isArray(v);
-    try {
-      const rawFull = localStorage.getItem(STORAGE_KEY);
-      const rawCore = localStorage.getItem(CORE_STORAGE_KEY);
-      const fullRawParsed = rawFull ? JSON.parse(rawFull) : null;
-      const coreRawParsed = rawCore ? JSON.parse(rawCore) : null;
-      const fullParsed = isPlainObj(fullRawParsed) ? fullRawParsed : null;
-      const coreParsed = isPlainObj(coreRawParsed) ? coreRawParsed : null;
-      const merged: Record<string, any> =
-        fullParsed && coreParsed
-          ? { ...fullParsed, ...coreParsed }
-          : coreParsed || fullParsed || {};
-      return {
-        ...merged,
-        bannerBgUrl: loadBackgroundCache('bannerBgUrl') || (typeof merged?.bannerBgUrl === 'string' ? merged.bannerBgUrl : ''),
-        studentCardBgUrl: loadBackgroundCache('studentCardBgUrl') || (typeof merged?.studentCardBgUrl === 'string' ? merged.studentCardBgUrl : ''),
-        coachCardBgUrl: loadBackgroundCache('coachCardBgUrl') || (typeof merged?.coachCardBgUrl === 'string' ? merged.coachCardBgUrl : ''),
-        judgeCardBgUrl: loadBackgroundCache('judgeCardBgUrl') || (typeof merged?.judgeCardBgUrl === 'string' ? merged.judgeCardBgUrl : ''),
-        certBgUrl: loadBackgroundCache('certBgUrl') || (typeof merged?.certBgUrl === 'string' ? merged.certBgUrl : '')
-      };
-    } catch {
-      return null;
-    }
-  }, []);
+  const apiTokenRef = useRef<string>('');
+  const [storageStats, setStorageStats] = useState<StorageStats | null>(null);
+  const [isUploadingImage, setIsUploadingImage] = useState<boolean>(false);
 
-  const [adminCredentials, setAdminCredentials] = useState<AdminCredentials>(() => {
-    const savedAdmin = savedState?.adminCredentials;
-    if (
-      savedAdmin &&
-      typeof savedAdmin.username === 'string' &&
-      typeof savedAdmin.password === 'string' &&
-      savedAdmin.username.trim() &&
-      savedAdmin.password.trim()
-    ) {
-      return {
-        username: savedAdmin.username.trim(),
-        password: savedAdmin.password,
-        displayName: String(savedAdmin.displayName || 'พระบุญทัน ธมฺมธาตา (Admin)')
-      };
-    }
-    return {
-      username: 'admin',
-      password: '1234',
-      displayName: 'พระบุญทัน ธมฺมธาตา (Admin)'
-    };
+  const [adminCredentials, setAdminCredentials] = useState<AdminCredentials>({
+    username: 'admin',
+    password: '',
+    displayName: 'พระบุญทัน ธมฺมธาตา (Admin)'
   });
 
   // ---------------- Session & Navigation State ----------------
   // role: 'guest' | 'admin' | 'school' | 'judge'
   const [rememberLogin, setRememberLogin] = useState<boolean>(true);
-  const [authSession, setAuthSession] = useState<AuthSession>(() => {
-    try {
-      const rawSession = localStorage.getItem(SESSION_STORAGE_KEY);
-      if (rawSession) {
-        const parsed = JSON.parse(rawSession) as AuthSession;
-        if (parsed && (parsed.role === 'admin' || parsed.role === 'school' || parsed.role === 'judge')) {
-          return parsed;
-        }
-      }
-    } catch {
-      // ignore invalid stored session
-    }
-    return {
-      role: 'guest',
-      userId: null,
-      displayName: 'ผู้เยี่ยมชมทั่วไป',
-      schoolId: null,
-      judgeId: null
-    };
+  const [authSession, setAuthSession] = useState<AuthSession>({
+    role: 'guest',
+    userId: null,
+    displayName: 'ผู้เยี่ยมชมทั่วไป',
+    schoolId: null,
+    judgeId: null
   });
 
   const [activeMenu, setActiveMenu] = useState<string>('home');
@@ -1809,146 +1661,47 @@ export default function App() {
   };
 
   // ---------------- System Settings & Backgrounds ----------------
-  const [registrationOpen, setRegistrationOpen] = useState<boolean>(() =>
-    typeof savedState?.registrationOpen === 'boolean' ? savedState.registrationOpen : true
-  );
-  const [menuPermissions, setMenuPermissions] = useState<Record<string, boolean>>(() =>
-    savedState?.menuPermissions && typeof savedState.menuPermissions === 'object'
-      ? {
-          'student-card': true,
-          'coach-card': true,
-          'judge-card': true,
-          'judge-cert': true,
-          'school-cert': true,
-          'school-results': true,
-          'results': true,
-          ...savedState.menuPermissions
-        }
-      : {
-          'student-card': true,
-          'coach-card': true,
-          'judge-card': true,
-          'judge-cert': true,
-          'school-cert': true,
-          'school-results': true,
-          'results': true
-        }
-  );
-  const [bannerBgUrl, setBannerBgUrl] = useState<string>(() => savedState?.bannerBgUrl || '');
-  const [studentCardBgUrl, setStudentCardBgUrl] = useState<string>(() => savedState?.studentCardBgUrl || '');
-  const [coachCardBgUrl, setCoachCardBgUrl] = useState<string>(() => savedState?.coachCardBgUrl || '');
-  const [judgeCardBgUrl, setJudgeCardBgUrl] = useState<string>(() => savedState?.judgeCardBgUrl || '');
-  const [certBgUrl, setCertBgUrl] = useState<string>(() => savedState?.certBgUrl || '');
+  const [registrationOpen, setRegistrationOpen] = useState<boolean>(true);
+  const [menuPermissions, setMenuPermissions] = useState<Record<string, boolean>>({
+    'student-card': true,
+    'coach-card': true,
+    'judge-card': true,
+    'judge-cert': true,
+    'school-cert': true,
+    'school-results': true,
+    'results': true
+  });
+  const [bannerBgUrl, setBannerBgUrl] = useState<string>('');
+  const [studentCardBgUrl, setStudentCardBgUrl] = useState<string>('');
+  const [coachCardBgUrl, setCoachCardBgUrl] = useState<string>('');
+  const [judgeCardBgUrl, setJudgeCardBgUrl] = useState<string>('');
+  const [certBgUrl, setCertBgUrl] = useState<string>('');
 
   // ---------------- Core Domain Entities ----------------
-  const isPlainRecord = (v: unknown): v is Record<string, any> =>
-    typeof v === 'object' && v !== null && !Array.isArray(v);
-
-  const [schools, setSchools] = useState<SchoolItem[]>(() => {
-    if (!Array.isArray(savedState?.schools)) return INITIAL_SCHOOLS;
-    return savedState.schools
-      .filter((s: unknown): s is Record<string, any> => isPlainRecord(s) && typeof s.id === 'string')
-      .map((s: Record<string, any>) => ({
-        id: String(s.id),
-        schoolCode: String(s.schoolCode ?? ''),
-        password: String(s.password ?? ''),
-        name: String(s.name ?? ''),
-        director: String(s.director ?? ''),
-        phone: String(s.phone ?? '')
-      }));
-  });
-  const [judges, setJudges] = useState<JudgeItem[]>(() => {
-    if (!Array.isArray(savedState?.judges)) return INITIAL_JUDGES;
-    return savedState.judges
-      .filter((j: unknown): j is Record<string, any> => isPlainRecord(j) && typeof j.id === 'string')
-      .map((j: Record<string, any>) => ({
-        id: String(j.id),
-        username: String(j.username ?? ''),
-        password: String(j.password ?? ''),
-        name: String(j.name ?? ''),
-        position: String(j.position ?? 'กรรมการตัดสิน'),
-        competitionId: String(j.competitionId ?? COMPETITIONS[0].id),
-        level: String(j.level ?? COMPETITIONS[0].levels[0]),
-        photoUrl: String(j.photoUrl ?? '')
-      }));
-  });
-  const [schedules, setSchedules] = useState<Record<string, ScheduleItem>>(() => {
-    const defaults = buildInitialSchedules();
-    if (!isPlainRecord(savedState?.schedules)) return defaults;
-    return { ...defaults, ...savedState.schedules };
-  });
-  const [registrations, setRegistrations] = useState<RegistrationItem[]>(() => {
-    if (!Array.isArray(savedState?.registrations)) return INITIAL_REGISTRATIONS;
-    return savedState.registrations
-      .filter((r: unknown): r is Record<string, any> => isPlainRecord(r) && typeof r.id === 'string')
-      .map((r: Record<string, any>) => ({
-        id: String(r.id),
-        schoolId: String(r.schoolId ?? ''),
-        competitionId: String(r.competitionId ?? COMPETITIONS[0].id),
-        level: String(r.level ?? COMPETITIONS[0].levels[0]),
-        students: Array.isArray(r.students)
-          ? r.students
-              .filter((st: unknown) => st !== null && st !== undefined)
-              .map((st: any) =>
-                typeof st === 'string'
-                  ? { name: st, photoUrl: '' }
-                  : { name: String(st?.name ?? ''), photoUrl: String(st?.photoUrl ?? '') }
-              )
-          : [],
-        coaches: Array.isArray(r.coaches)
-          ? r.coaches
-              .filter((c: unknown) => typeof c === 'string' || isPlainRecord(c))
-              .map((c: unknown): CoachEntry =>
-                typeof c === 'string'
-                  ? c
-                  : {
-                      name: String((c as Record<string, unknown>).name ?? ''),
-                      photoUrl:
-                        typeof (c as Record<string, unknown>).photoUrl === 'string'
-                          ? String((c as Record<string, unknown>).photoUrl)
-                          : ''
-                    }
-              )
-          : [],
-        qualifyingSong: String(r.qualifyingSong ?? ''),
-        finalSong: String(r.finalSong ?? '')
-      }));
-  });
-  const [scores, setScores] = useState<ScoresMap>(() =>
-    isPlainRecord(savedState?.scores) ? savedState.scores : INITIAL_SCORES
-  );
-  const [scoreCriteriaDetails, setScoreCriteriaDetails] = useState<ScoreCriteriaDetailsMap>(() =>
-    isPlainRecord(savedState?.scoreCriteriaDetails) ? savedState.scoreCriteriaDetails : INITIAL_SCORE_CRITERIA
-  );
-  const [evalMeta, setEvalMeta] = useState<EvalMetaMap>(() =>
-    isPlainRecord(savedState?.evalMeta) ? savedState.evalMeta : INITIAL_EVAL_META
-  );
-  const [absentRegs, setAbsentRegs] = useState<Record<string, boolean>>(() =>
-    isPlainRecord(savedState?.absentRegs) ? savedState.absentRegs : {}
-  );
+  const [schools, setSchools] = useState<SchoolItem[]>(INITIAL_SCHOOLS);
+  const [judges, setJudges] = useState<JudgeItem[]>(INITIAL_JUDGES);
+  const [schedules, setSchedules] = useState<Record<string, ScheduleItem>>(() => buildInitialSchedules());
+  const [registrations, setRegistrations] = useState<RegistrationItem[]>(INITIAL_REGISTRATIONS);
+  const [scores, setScores] = useState<ScoresMap>(INITIAL_SCORES);
+  const [scoreCriteriaDetails, setScoreCriteriaDetails] = useState<ScoreCriteriaDetailsMap>(INITIAL_SCORE_CRITERIA);
+  const [evalMeta, setEvalMeta] = useState<EvalMetaMap>(INITIAL_EVAL_META);
+  const [absentRegs, setAbsentRegs] = useState<Record<string, boolean>>({});
 
   // ---------------- UI Filters & Modals ----------------
   const [toast, setToast] = useState<ToastState | null>(null);
   const [closedMenuModal, setClosedMenuModal] = useState<ClosedMenuModalState | null>(null);
   const [customCriteriaByComp, setCustomCriteriaByComp] = useState<Record<string, CriterionItem[]>>(() => {
     const initialMap: Record<string, CriterionItem[]> = {};
-    const savedCriteria = isPlainRecord(savedState?.customCriteriaByComp)
-      ? savedState.customCriteriaByComp
-      : null;
     COMPETITIONS.forEach((comp) => {
-      if (savedCriteria && Array.isArray(savedCriteria[comp.id])) {
-        initialMap[comp.id] = savedCriteria[comp.id];
-      } else {
-        initialMap[comp.id] =
-          comp.id === 'comp-7'
-            ? []
-            : getCompetitionCriteria(comp.id, null).map((c) => ({
-                key: c.key,
-                label: c.label,
-                max: c.max,
-                maxLabel: c.maxLabel || `${c.max} คะแนน`
-              }));
-      }
+      initialMap[comp.id] =
+        comp.id === 'comp-7'
+          ? []
+          : getCompetitionCriteria(comp.id, null).map((c) => ({
+              key: c.key,
+              label: c.label,
+              max: c.max,
+              maxLabel: c.maxLabel || `${c.max} คะแนน`
+            }));
     });
     return initialMap;
   });
@@ -2104,161 +1857,182 @@ export default function App() {
   // Track which team cards are currently in edit mode after being saved: unlockedScoreCards[regId] = boolean
   const [unlockedScoreCards, setUnlockedScoreCards] = useState<Record<string, boolean>>({});
 
-  const idbBgHydratedRef = useRef<boolean>(false);
+  const applyAppServerState = (srv: Record<string, any> | null | undefined) => {
+    if (!srv || typeof srv !== 'object') return;
+    if (srv.authSession && typeof srv.authSession === 'object') {
+      setAuthSession(srv.authSession as AuthSession);
+    }
+    if (srv.adminCredentials && typeof srv.adminCredentials === 'object') {
+      const nextAdminCreds: AdminCredentials = {
+        username: String(srv.adminCredentials.username || 'admin'),
+        password: '',
+        displayName: String(srv.adminCredentials.displayName || 'พระบุญทัน ธมฺมธาตา (Admin)')
+      };
+      setAdminCredentials(nextAdminCreds);
+      setAdminCredForm((prev) => ({
+        ...prev,
+        newUsername: nextAdminCreds.username || prev.newUsername,
+        newDisplayName: nextAdminCreds.displayName
+      }));
+    }
+    if (typeof srv.registrationOpen === 'boolean') {
+      setRegistrationOpen(srv.registrationOpen);
+    }
+    if (srv.menuPermissions && typeof srv.menuPermissions === 'object') {
+      setMenuPermissions((prev) => ({ ...prev, ...srv.menuPermissions }));
+    }
+    if (srv.backgrounds && typeof srv.backgrounds === 'object') {
+      setBannerBgUrl(String(srv.backgrounds.bannerBgUrl || ''));
+      setStudentCardBgUrl(String(srv.backgrounds.studentCardBgUrl || ''));
+      setCoachCardBgUrl(String(srv.backgrounds.coachCardBgUrl || ''));
+      setJudgeCardBgUrl(String(srv.backgrounds.judgeCardBgUrl || ''));
+      setCertBgUrl(String(srv.backgrounds.certBgUrl || ''));
+    }
+    if (Array.isArray(srv.schools)) {
+      setSchools(srv.schools);
+    }
+    if (Array.isArray(srv.judges)) {
+      setJudges(srv.judges);
+    }
+    if (srv.schedules && typeof srv.schedules === 'object') {
+      setSchedules({ ...buildInitialSchedules(), ...srv.schedules });
+    }
+    if (Array.isArray(srv.registrations)) {
+      setRegistrations(srv.registrations);
+    }
+    if (srv.scores && typeof srv.scores === 'object') {
+      setScores(srv.scores);
+    }
+    if (srv.scoreCriteriaDetails && typeof srv.scoreCriteriaDetails === 'object') {
+      setScoreCriteriaDetails(srv.scoreCriteriaDetails);
+    }
+    if (srv.evalMeta && typeof srv.evalMeta === 'object') {
+      setEvalMeta(srv.evalMeta);
+    }
+    if (srv.absentRegs && typeof srv.absentRegs === 'object') {
+      setAbsentRegs(srv.absentRegs);
+    }
+    if (srv.customCriteriaByComp && typeof srv.customCriteriaByComp === 'object') {
+      setCustomCriteriaByComp(srv.customCriteriaByComp);
+    }
+    setStorageStats(srv.storageStats && typeof srv.storageStats === 'object' ? (srv.storageStats as StorageStats) : null);
+  };
+
+  const appApiCall = async <T = Record<string, any>>(
+    endpoint: string,
+    body?: unknown,
+    method: 'GET' | 'POST' = 'POST'
+  ): Promise<T & { ok?: boolean; error?: string; message?: string; token?: string; state?: Record<string, any> }> => {
+    const headers: Record<string, string> = {
+      'X-Requested-With': 'XMLHttpRequest'
+    };
+    if (apiTokenRef.current) {
+      headers.Authorization = `Bearer ${apiTokenRef.current}`;
+    }
+    if (method === 'POST') {
+      headers['Content-Type'] = 'application/json';
+    }
+    const resp = await fetch(`/api/app${endpoint}`, {
+      method,
+      credentials: 'include',
+      headers,
+      body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data?.ok === false) {
+      throw new Error(data?.error || `เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์ (${resp.status})`);
+    }
+    if (typeof data?.token === 'string') {
+      apiTokenRef.current = data.token;
+    }
+    if (data?.state) {
+      applyAppServerState(data.state);
+    }
+    return data;
+  };
+
+  const uploadImageToServer = async (
+    file: File,
+    category: 'students' | 'coaches' | 'judges' | 'backgrounds',
+    maxDim = 600,
+    quality = 0.85
+  ): Promise<string> => {
+    setIsUploadingImage(true);
+    try {
+      const compressed = await compressImageFile(file, maxDim, quality);
+      if (!compressed || !compressed.startsWith('data:image/')) {
+        throw new Error('ไฟล์รูปภาพไม่ถูกต้อง รองรับ PNG, JPG, GIF หรือ WebP');
+      }
+      const res = await appApiCall<{ url?: string }>('/upload-image', { category, dataUrl: compressed });
+      const uploadedUrl = safeImageUrl(res.url || '');
+      if (!uploadedUrl) {
+        throw new Error('ไม่สามารถบันทึกไฟล์รูปภาพบนเซิร์ฟเวอร์ได้');
+      }
+      showToast('อัปโหลดและบันทึกไฟล์ภาพลงบนเซิร์ฟเวอร์เรียบร้อยแล้ว');
+      return uploadedUrl;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'ไม่สามารถอัปโหลดรูปภาพได้';
+      showToast(msg, 'error');
+      return '';
+    } finally {
+      setIsUploadingImage(false);
+    }
+  };
+
+  const handleDownloadServerBackup = async () => {
+    try {
+      const headers: Record<string, string> = { 'X-Requested-With': 'XMLHttpRequest' };
+      if (apiTokenRef.current) {
+        headers.Authorization = `Bearer ${apiTokenRef.current}`;
+      }
+      const resp = await fetch('/api/app/admin/backup', {
+        method: 'GET',
+        credentials: 'include',
+        headers
+      });
+      if (!resp.ok) {
+        throw new Error('ไม่สามารถดาวน์โหลดไฟล์สำรองข้อมูลได้');
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `makhapuja_backup_${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      showToast('ดาวน์โหลดไฟล์สำรองข้อมูลระบบเรียบร้อยแล้ว');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'เกิดข้อผิดพลาดในการสำรองข้อมูล', 'error');
+    }
+  };
 
   React.useEffect(() => {
+    LEGACY_LOCAL_KEYS.forEach((k) => {
+      try {
+        localStorage.removeItem(k);
+      } catch {
+        // ignore storage errors
+      }
+    });
     let cancelled = false;
     (async () => {
-      const storedBgs = await loadAllBackgroundsFromIdb();
-      if (cancelled) return;
-
-      const entries: Array<{
-        key: BackgroundKey;
-        current: string;
-        setter: React.Dispatch<React.SetStateAction<string>>;
-      }> = [
-        { key: 'bannerBgUrl', current: bannerBgUrl, setter: setBannerBgUrl },
-        { key: 'studentCardBgUrl', current: studentCardBgUrl, setter: setStudentCardBgUrl },
-        { key: 'coachCardBgUrl', current: coachCardBgUrl, setter: setCoachCardBgUrl },
-        { key: 'judgeCardBgUrl', current: judgeCardBgUrl, setter: setJudgeCardBgUrl },
-        { key: 'certBgUrl', current: certBgUrl, setter: setCertBgUrl }
-      ];
-
-      for (const item of entries) {
-        const fromIdb = storedBgs[item.key];
-        if (fromIdb) {
-          item.setter((prev) => prev || fromIdb);
-          saveBackgroundCache(item.key, fromIdb);
-        } else if (item.current) {
-          await saveBackgroundToIdb(item.key, item.current);
-          saveBackgroundCache(item.key, item.current);
+      try {
+        const resp = await fetch('/api/app/bootstrap', { credentials: 'include' });
+        if (!resp.ok || cancelled) return;
+        const data = await resp.json();
+        if (!cancelled && data?.ok && data?.state) {
+          applyAppServerState(data.state);
         }
+      } catch {
+        // keep default view if offline during boot
       }
-
-      idbBgHydratedRef.current = true;
     })();
     return () => {
       cancelled = true;
     };
   }, []);
-
-  React.useEffect(() => {
-    const corePayload = {
-      adminCredentials,
-      registrationOpen,
-      menuPermissions,
-      schools,
-      judges,
-      schedules,
-      registrations,
-      scores,
-      scoreCriteriaDetails,
-      evalMeta,
-      absentRegs,
-      customCriteriaByComp
-    };
-    let coreSaved = false;
-    try {
-      localStorage.setItem(CORE_STORAGE_KEY, JSON.stringify(corePayload));
-      coreSaved = true;
-    } catch {
-      // If registrations with large photos still exceed quota, save stripped core fallback
-      try {
-        const compactRegs = registrations.map((r) => ({
-          ...r,
-          students: r.students.map((st) => ({ ...st, photoUrl: '' })),
-          coaches: r.coaches.map((c) => (typeof c === 'string' ? c : { ...c, photoUrl: '' }))
-        }));
-        localStorage.setItem(CORE_STORAGE_KEY, JSON.stringify({ ...corePayload, registrations: compactRegs }));
-        coreSaved = true;
-      } catch {
-        // Ignore if storage completely blocked
-      }
-    }
-
-    // Remove legacy combined STORAGE_KEY copy once corePayload + backgrounds are safely stored separately
-    if (coreSaved && idbBgHydratedRef.current) {
-      try {
-        localStorage.removeItem(STORAGE_KEY);
-      } catch {
-        // Ignore
-      }
-    }
-  }, [
-    adminCredentials,
-    registrationOpen,
-    menuPermissions,
-    schools,
-    judges,
-    schedules,
-    registrations,
-    scores,
-    scoreCriteriaDetails,
-    evalMeta,
-    absentRegs,
-    customCriteriaByComp
-  ]);
-
-  React.useEffect(() => {
-    const bgPairs: Array<[BackgroundKey, string]> = [
-      ['bannerBgUrl', bannerBgUrl],
-      ['studentCardBgUrl', studentCardBgUrl],
-      ['coachCardBgUrl', coachCardBgUrl],
-      ['judgeCardBgUrl', judgeCardBgUrl],
-      ['certBgUrl', certBgUrl]
-    ];
-    bgPairs.forEach(([key, val]) => {
-      saveBackgroundCache(key, val);
-      if (idbBgHydratedRef.current) {
-        void saveBackgroundToIdb(key, val);
-      }
-    });
-  }, [bannerBgUrl, studentCardBgUrl, coachCardBgUrl, judgeCardBgUrl, certBgUrl]);
-
-  React.useEffect(() => {
-    try {
-      if (authSession.role === 'guest' || !rememberLogin) {
-        localStorage.removeItem(SESSION_STORAGE_KEY);
-      } else {
-        localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(authSession));
-      }
-    } catch {
-      // Ignore storage errors cleanly
-    }
-  }, [authSession, rememberLogin]);
-
-  // Verify persisted session matches existing schools/judges and keep displayName synced
-  React.useEffect(() => {
-    if (authSession.role === 'school') {
-      const matched = schools.find((s) => s.id === authSession.schoolId);
-      if (!matched) {
-        setAuthSession({
-          role: 'guest',
-          userId: null,
-          displayName: 'ผู้เยี่ยมชมทั่วไป',
-          schoolId: null,
-          judgeId: null
-        });
-      } else if (matched.name !== authSession.displayName) {
-        setAuthSession((prev) => ({ ...prev, displayName: matched.name }));
-      }
-    } else if (authSession.role === 'judge') {
-      const matched = judges.find((j) => j.id === authSession.judgeId);
-      if (!matched) {
-        setAuthSession({
-          role: 'guest',
-          userId: null,
-          displayName: 'ผู้เยี่ยมชมทั่วไป',
-          schoolId: null,
-          judgeId: null
-        });
-      } else if (matched.name !== authSession.displayName) {
-        setAuthSession((prev) => ({ ...prev, displayName: matched.name }));
-      }
-    } else if (authSession.role === 'admin' && adminCredentials.displayName !== authSession.displayName) {
-      setAuthSession((prev) => ({ ...prev, displayName: adminCredentials.displayName }));
-    }
-  }, [schools, judges, adminCredentials.displayName, authSession.role, authSession.schoolId, authSession.judgeId, authSession.displayName]);
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setToast({ id: Date.now(), message, type });
@@ -2411,7 +2185,7 @@ export default function App() {
     return allowed.includes(postLoginRedirect) ? postLoginRedirect : fallbackMenu;
   };
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const u = loginUser.trim();
     const p = loginPass.trim();
@@ -2424,104 +2198,66 @@ export default function App() {
       return;
     }
 
-    if (loginTab === 'admin') {
-      if (u === adminCredentials.username && p === adminCredentials.password) {
-        setAuthSession({
-          role: 'admin',
-          userId: 'admin-01',
-          displayName: adminCredentials.displayName,
-          schoolId: null,
-          judgeId: null
-        });
-        setLoginUser('');
-        setLoginPass('');
-        setShowLoginPass(false);
-        const dest = resolvePostLoginMenu('admin', 'admin-manage');
-        setPostLoginRedirect(null);
-        setActiveMenu(dest);
-        showToast(`เข้าสู่ระบบผู้ดูแลระบบสำเร็จ (${adminCredentials.displayName})`);
-      } else {
-        const msg = 'ชื่อผู้ใช้หรือรหัสผ่านผู้ดูแลระบบไม่ถูกต้อง';
-        setLoginError(msg);
-        showToast(msg, 'error');
-      }
-      return;
-    }
-
-    if (loginTab === 'school') {
-      const found = schools.find((s) => s.schoolCode.trim() === u && s.password === p);
-      if (found) {
-        setAuthSession({
-          role: 'school',
-          userId: found.id,
-          displayName: found.name,
-          schoolId: found.id,
-          judgeId: null
-        });
-        setLoginUser('');
-        setLoginPass('');
-        setShowLoginPass(false);
-        const dest = resolvePostLoginMenu('school', 'by-school');
-        setPostLoginRedirect(null);
-        setActiveMenu(dest);
-        showToast(`ยินดีต้อนรับ ${found.name}`);
-      } else {
-        const msg = 'รหัสสถานศึกษาหรือรหัสผ่านไม่ถูกต้อง กรุณาตรวจสอบอีกครั้ง';
-        setLoginError(msg);
-        showToast(msg, 'error');
-      }
-      return;
-    }
-
-    if (loginTab === 'judge') {
-      const foundJudge = judges.find((j) => j.username.trim() === u && j.password === p);
-      if (foundJudge) {
-        setAuthSession({
-          role: 'judge',
-          userId: foundJudge.id,
-          displayName: foundJudge.name,
-          schoolId: null,
-          judgeId: foundJudge.id
-        });
-        const criteriaList =
-          foundJudge.competitionId === 'comp-7'
-            ? [{ key: 'correctAnswers', label: 'จำนวนข้อสอบที่ตอบถูกต้อง (ลงคะแนนตามข้อที่ตอบถูก)', max: 100, maxLabel: '100 ข้อ/คะแนน' }]
-            : getCompetitionCriteria(foundJudge.competitionId, customCriteriaByComp);
-        const initialDraft: Record<string, Record<string, number | ''>> = {};
-        registrations
-          .filter((r) => r.competitionId === foundJudge.competitionId && r.level === foundJudge.level)
-          .forEach((r) => {
-            const existingDetail = scoreCriteriaDetails[r.id]?.[foundJudge.id];
-            const existingTotal = scores[r.id]?.[foundJudge.id];
-            const rowDraft: Record<string, number | ''> = {};
-            criteriaList.forEach((crit, cIdx) => {
-              if (existingDetail && existingDetail[crit.key] !== undefined) {
-                rowDraft[crit.key] = existingDetail[crit.key];
-              } else if (cIdx === 0 && existingTotal !== undefined && !existingDetail) {
-                rowDraft[crit.key] = existingTotal;
-              } else {
-                rowDraft[crit.key] = '';
-              }
+    try {
+      const res = await appApiCall('/login', {
+        loginTab,
+        username: u,
+        password: p,
+        remember: rememberLogin
+      });
+      const nextRole = (res.state?.authSession?.role || loginTab) as RoleType;
+      if (nextRole === 'judge') {
+        const loggedJudgeId = res.state?.authSession?.judgeId;
+        const srvJudges: JudgeItem[] = Array.isArray(res.state?.judges) ? res.state.judges : judges;
+        const foundJudge = srvJudges.find((j) => j.id === loggedJudgeId);
+        const srvRegs: RegistrationItem[] = Array.isArray(res.state?.registrations) ? res.state.registrations : registrations;
+        const srvCriteria = res.state?.customCriteriaByComp || customCriteriaByComp;
+        const srvDetails = res.state?.scoreCriteriaDetails || scoreCriteriaDetails;
+        const srvScores = res.state?.scores || scores;
+        if (foundJudge) {
+          const criteriaList =
+            foundJudge.competitionId === 'comp-7'
+              ? [{ key: 'correctAnswers', label: 'จำนวนข้อสอบที่ตอบถูกต้อง (ลงคะแนนตามข้อที่ตอบถูก)', max: 100, maxLabel: '100 ข้อ/คะแนน' }]
+              : getCompetitionCriteria(foundJudge.competitionId, srvCriteria);
+          const initialDraft: Record<string, Record<string, number | ''>> = {};
+          srvRegs
+            .filter((r) => r.competitionId === foundJudge.competitionId && r.level === foundJudge.level)
+            .forEach((r) => {
+              const existingDetail = srvDetails[r.id]?.[foundJudge.id];
+              const existingTotal = srvScores[r.id]?.[foundJudge.id];
+              const rowDraft: Record<string, number | ''> = {};
+              criteriaList.forEach((crit, cIdx) => {
+                if (existingDetail && existingDetail[crit.key] !== undefined) {
+                  rowDraft[crit.key] = existingDetail[crit.key];
+                } else if (cIdx === 0 && existingTotal !== undefined && !existingDetail) {
+                  rowDraft[crit.key] = existingTotal;
+                } else {
+                  rowDraft[crit.key] = '';
+                }
+              });
+              initialDraft[r.id] = rowDraft;
             });
-            initialDraft[r.id] = rowDraft;
-          });
-        setDraftCriteriaScores(initialDraft);
-        setLoginUser('');
-        setLoginPass('');
-        setShowLoginPass(false);
-        const dest = resolvePostLoginMenu('judge', 'judge-scoring');
-        setPostLoginRedirect(null);
-        setActiveMenu(dest);
-        showToast(`เข้าสู่ระบบกรรมการตัดสิน: ${foundJudge.name}`);
-      } else {
-        const msg = 'Username หรือ Password ของกรรมการไม่ถูกต้อง';
-        setLoginError(msg);
-        showToast(msg, 'error');
+          setDraftCriteriaScores(initialDraft);
+        }
       }
+
+      setLoginUser('');
+      setLoginPass('');
+      setShowLoginPass(false);
+      const fallbackMenu =
+        nextRole === 'admin' ? 'admin-manage' : nextRole === 'judge' ? 'judge-scoring' : 'by-school';
+      const dest = resolvePostLoginMenu(nextRole, fallbackMenu);
+      setPostLoginRedirect(null);
+      setActiveMenu(dest);
+      showToast(res.message || 'เข้าสู่ระบบสำเร็จ');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง';
+      setLoginError(msg);
+      showToast(msg, 'error');
     }
   };
 
-  const handleSchoolSignupSubmit = (e: React.FormEvent) => {
+  const handleSchoolSignupSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
     const code = newSchoolForm.schoolCode.trim();
@@ -2547,45 +2283,38 @@ export default function App() {
       showToast(msg, 'error');
       return;
     }
-    if (schools.some((s) => s.schoolCode.trim() === code)) {
-      const msg = 'รหัสสถานศึกษานี้มีในระบบแล้ว (จำกัดโรงเรียนละ ๑ User)';
+
+    try {
+      const res = await appApiCall('/signup', {
+        schoolCode: code,
+        name,
+        director,
+        phone: newSchoolForm.phone.trim() || '-',
+        password,
+        remember: rememberLogin
+      });
+      setNewSchoolForm({ schoolCode: '', password: '', name: '', director: '', phone: '' });
+      setSignupConfirmPass('');
+      setShowSignupPass(false);
+      setShowSignupConfirmPass(false);
+      setPostLoginRedirect(null);
+      setActiveMenu('register');
+      showToast(res.message || `สมัครสมาชิกโรงเรียน "${name}" สำเร็จ และเข้าสู่ระบบแล้ว`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'ไม่สามารถสมัครสมาชิกโรงเรียนได้';
       setLoginError(msg);
       showToast(msg, 'error');
-      return;
     }
-
-    const created = {
-      id: `sch-${code}-${Date.now()}`,
-      schoolCode: code,
-      password,
-      name,
-      director,
-      phone: newSchoolForm.phone.trim() || '-'
-    };
-
-    setSchools((prev) => [...prev, created]);
-    setAuthSession({
-      role: 'school',
-      userId: created.id,
-      displayName: created.name,
-      schoolId: created.id,
-      judgeId: null
-    });
-    setNewSchoolForm({ schoolCode: '', password: '', name: '', director: '', phone: '' });
-    setSignupConfirmPass('');
-    setShowSignupPass(false);
-    setShowSignupConfirmPass(false);
-    setPostLoginRedirect(null);
-    setActiveMenu('register');
-    showToast(`สมัครสมาชิกโรงเรียน "${created.name}" สำเร็จ และเข้าสู่ระบบแล้ว`);
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     try {
-      localStorage.removeItem(SESSION_STORAGE_KEY);
+      await appApiCall('/logout', {});
     } catch {
-      // ignore storage errors
+      // clear local state even if request fails
     }
+    apiTokenRef.current = '';
+    setStorageStats(null);
     setAuthSession({
       role: 'guest',
       userId: null,
@@ -2661,25 +2390,27 @@ export default function App() {
 
   const handleStudentPhotoUpload = async (idx: number, file?: File) => {
     if (!file) return;
-    const compressed = await compressImageFile(file, 600, 0.85);
+    const uploadedUrl = await uploadImageToServer(file, 'students', 600, 0.85);
+    if (!uploadedUrl) return;
     setRegForm((prev) => {
       const nextPhotos = [...prev.studentPhotos];
-      nextPhotos[idx] = compressed;
+      nextPhotos[idx] = uploadedUrl;
       return { ...prev, studentPhotos: nextPhotos };
     });
   };
 
   const handleCoachPhotoUpload = async (idx: number, file?: File) => {
     if (!file) return;
-    const compressed = await compressImageFile(file, 600, 0.85);
+    const uploadedUrl = await uploadImageToServer(file, 'coaches', 600, 0.85);
+    if (!uploadedUrl) return;
     setRegForm((prev) => {
       const nextPhotos = [...prev.coachPhotos];
-      nextPhotos[idx] = compressed;
+      nextPhotos[idx] = uploadedUrl;
       return { ...prev, coachPhotos: nextPhotos };
     });
   };
 
-  const handleRegistrationSubmit = (e: React.FormEvent) => {
+  const handleRegistrationSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!registrationOpen && authSession.role !== 'admin' && !regForm.editingId) {
       showToast('ขณะนี้ระบบปิดรับสมัครแข่งขันแล้ว สามารถแก้ไขข้อมูลรายการที่สมัครไว้ได้เท่านั้น', 'error');
@@ -2728,28 +2459,9 @@ export default function App() {
         ? regForm.level
         : comp?.levels[0] || regForm.level;
 
-    if (regForm.editingId) {
-      const editId = regForm.editingId;
-      setRegistrations((prev) =>
-        prev.map((r) =>
-          r.id === editId
-            ? {
-                ...r,
-                schoolId: authSession.role === 'admin' ? targetSchoolId : r.schoolId,
-                competitionId: regForm.competitionId,
-                level: resolvedLevel,
-                students: cleanedStudents,
-                coaches: cleanedCoaches.length > 0 ? cleanedCoaches : [{ name: 'ครูผู้ฝึกสอน', photoUrl: '' }],
-                qualifyingSong: comp?.requiresSongs ? regForm.qualifyingSong.trim() : '',
-                finalSong: comp?.requiresSongs ? regForm.finalSong.trim() : ''
-              }
-            : r
-        )
-      );
-      showToast('แก้ไขข้อมูลการสมัครแข่งขันเรียบร้อยแล้ว');
-    } else {
-      const createdReg = {
-        id: `reg-${Date.now()}`,
+    try {
+      const res = await appApiCall('/registrations/save', {
+        id: regForm.editingId || undefined,
         schoolId: targetSchoolId,
         competitionId: regForm.competitionId,
         level: resolvedLevel,
@@ -2757,39 +2469,25 @@ export default function App() {
         coaches: cleanedCoaches.length > 0 ? cleanedCoaches : [{ name: 'ครูผู้ฝึกสอน', photoUrl: '' }],
         qualifyingSong: comp?.requiresSongs ? regForm.qualifyingSong.trim() : '',
         finalSong: comp?.requiresSongs ? regForm.finalSong.trim() : ''
-      };
-      setRegistrations((prev) => [...prev, createdReg]);
-      showToast('บันทึกการสมัครแข่งขันเรียบร้อยแล้ว');
+      });
+      showToast(res.message || 'บันทึกการสมัครแข่งขันเรียบร้อยแล้ว');
+      prepareRegistrationForm(regForm.competitionId, resolvedLevel, null);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'ไม่สามารถบันทึกข้อมูลการสมัครได้', 'error');
     }
-
-    prepareRegistrationForm(regForm.competitionId, resolvedLevel, null);
   };
 
-  const handleDeleteRegistration = (regId: string) => {
-    setRegistrations((prev) => prev.filter((r) => r.id !== regId));
-    setAbsentRegs((prev) => {
-      if (!prev[regId]) return prev;
-      const next = { ...prev };
-      delete next[regId];
-      return next;
-    });
-    setScores((prev) => {
-      if (!prev[regId]) return prev;
-      const next = { ...prev };
-      delete next[regId];
-      return next;
-    });
-    setScoreCriteriaDetails((prev) => {
-      if (!prev[regId]) return prev;
-      const next = { ...prev };
-      delete next[regId];
-      return next;
-    });
-    if (bySchoolEditForm?.id === regId) {
-      setBySchoolEditForm(null);
+  const handleDeleteRegistration = async (regId: string) => {
+    try {
+      const res = await appApiCall('/registrations/delete', { id: regId });
+      if (bySchoolEditForm?.id === regId) {
+        setBySchoolEditForm(null);
+      }
+      setConfirmDeleteRegId(null);
+      showToast(res.message || 'ลบรายการสมัครเรียบร้อยแล้ว');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'ไม่สามารถลบรายการสมัครได้', 'error');
     }
-    setConfirmDeleteRegId(null);
-    showToast('ลบรายการสมัครเรียบร้อยแล้ว');
   };
 
   const openBySchoolEditModal = (reg: RegistrationItem) => {
@@ -2849,21 +2547,22 @@ export default function App() {
 
   const handleBySchoolEditPhotoUpload = async (kind: 'student' | 'coach', idx: number, file?: File) => {
     if (!file) return;
-    const dataUrl = await compressImageFile(file, 600, 0.85);
+    const uploadedUrl = await uploadImageToServer(file, kind === 'coach' ? 'coaches' : 'students', 600, 0.85);
+    if (!uploadedUrl) return;
     setBySchoolEditForm((prev) => {
       if (!prev) return null;
       if (kind === 'student') {
         const next = [...prev.studentPhotos];
-        next[idx] = dataUrl;
+        next[idx] = uploadedUrl;
         return { ...prev, studentPhotos: next };
       }
       const next = [...prev.coachPhotos];
-      next[idx] = dataUrl;
+      next[idx] = uploadedUrl;
       return { ...prev, coachPhotos: next };
     });
   };
 
-  const handleBySchoolEditSave = (e: React.FormEvent) => {
+  const handleBySchoolEditSave = async (e: React.FormEvent) => {
     e.preventDefault();
     const draft = bySchoolEditForm;
     if (!draft) return;
@@ -2904,26 +2603,22 @@ export default function App() {
     const targetSchoolId =
       authSession.role === 'admin' ? draft.schoolId : authSession.schoolId || draft.schoolId;
 
-    setRegistrations((prev) =>
-      prev.map((r) =>
-        r.id === draft.id
-          ? {
-              ...r,
-              schoolId: targetSchoolId,
-              competitionId: draft.competitionId,
-              level: resolvedLevel,
-              students: cleanedStudents,
-              coaches:
-                cleanedCoaches.length > 0 ? cleanedCoaches : [{ name: 'ครูผู้ฝึกสอน', photoUrl: '' }],
-              qualifyingSong: comp?.requiresSongs ? draft.qualifyingSong.trim() : '',
-              finalSong: comp?.requiresSongs ? draft.finalSong.trim() : ''
-            }
-          : r
-      )
-    );
-
-    setBySchoolEditForm(null);
-    showToast('แก้ไขข้อมูลการสมัครแข่งขันเรียบร้อยแล้ว');
+    try {
+      const res = await appApiCall('/registrations/save', {
+        id: draft.id,
+        schoolId: targetSchoolId,
+        competitionId: draft.competitionId,
+        level: resolvedLevel,
+        students: cleanedStudents,
+        coaches: cleanedCoaches.length > 0 ? cleanedCoaches : [{ name: 'ครูผู้ฝึกสอน', photoUrl: '' }],
+        qualifyingSong: comp?.requiresSongs ? draft.qualifyingSong.trim() : '',
+        finalSong: comp?.requiresSongs ? draft.finalSong.trim() : ''
+      });
+      setBySchoolEditForm(null);
+      showToast(res.message || 'แก้ไขข้อมูลการสมัครแข่งขันเรียบร้อยแล้ว');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'ไม่สามารถแก้ไขข้อมูลการสมัครได้', 'error');
+    }
   };
 
   // ---------------- PDF / Print Generators ----------------
@@ -3135,7 +2830,7 @@ export default function App() {
             <div><strong>สถานที่:</strong> ${escapeHtml(sched.venue)}</div>
             <div><strong>เวลา:</strong> ${escapeHtml(sched.timeRange)}</div>
             <div style="margin-top: 4px; padding-top: 4px; color: #0c4a6e;">
-              <strong>ชื่อผู้ใช้:</strong> ${escapeHtml(jdg.username || '-')} | <strong>รหัสผ่าน:</strong> ${escapeHtml(jdg.password || '-')}
+              <strong>ชื่อผู้ใช้:</strong> ${escapeHtml(jdg.username || '-')} | <strong>สถานะรหัสผ่าน:</strong> เข้ารหัสปลอดภัยในระบบ
             </div>
           </div>
 
@@ -5331,12 +5026,36 @@ export default function App() {
                       <input
                         type="file"
                         accept="image/*"
+                        disabled={isUploadingImage}
                         className="hidden"
-                        onChange={(e) => handleStudentPhotoUpload(idx, e.target.files?.[0])}
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          e.currentTarget.value = '';
+                          void handleStudentPhotoUpload(idx, f);
+                        }}
                       />
                     </label>
                     {regForm.studentPhotos[idx] && (
-                      <span className="text-emerald-700 font-semibold">มีรูปภาพแล้ว</span>
+                      <div className="flex items-center gap-2">
+                        <img
+                          src={safeImageUrl(regForm.studentPhotos[idx])}
+                          alt="รูปผู้เข้าแข่งขัน"
+                          className="w-9 h-9 rounded-lg object-cover object-top border border-amber-200 bg-white"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setRegForm((prev) => {
+                              const nextPhotos = [...prev.studentPhotos];
+                              nextPhotos[idx] = '';
+                              return { ...prev, studentPhotos: nextPhotos };
+                            })
+                          }
+                          className="text-rose-600 hover:underline font-semibold cursor-pointer"
+                        >
+                          ลบรูป
+                        </button>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -5401,12 +5120,36 @@ export default function App() {
                       <input
                         type="file"
                         accept="image/*"
+                        disabled={isUploadingImage}
                         className="hidden"
-                        onChange={(e) => handleCoachPhotoUpload(idx, e.target.files?.[0])}
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          e.currentTarget.value = '';
+                          void handleCoachPhotoUpload(idx, f);
+                        }}
                       />
                     </label>
                     {regForm.coachPhotos[idx] && (
-                      <span className="text-emerald-700 font-semibold">มีรูปภาพแล้ว</span>
+                      <div className="flex items-center gap-2">
+                        <img
+                          src={safeImageUrl(regForm.coachPhotos[idx])}
+                          alt="รูปครูผู้ฝึกสอน"
+                          className="w-9 h-9 rounded-lg object-cover object-top border border-emerald-200 bg-white"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setRegForm((prev) => {
+                              const nextPhotos = [...prev.coachPhotos];
+                              nextPhotos[idx] = '';
+                              return { ...prev, coachPhotos: nextPhotos };
+                            })
+                          }
+                          className="text-rose-600 hover:underline font-semibold cursor-pointer"
+                        >
+                          ลบรูป
+                        </button>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -5704,28 +5447,31 @@ export default function App() {
       });
     };
 
-    const handleSaveScheduleItem = (key: string, compName: string, lvlName: string) => {
+    const handleSaveScheduleItem = async (key: string, compName: string, lvlName: string) => {
       const draft = scheduleDrafts[key] || getDefaultScheduleItem(key);
       const cleanedVenue = (draft.venue || '').trim() || EVENT_VENUE_TH;
       const cleanedTime = (draft.timeRange || '').trim() || '08.30 - 12.00 น.';
+      const cleanedDate = (draft.dateLabel || '').trim() || EVENT_DATE_TH;
+      const cleanedNotes = (draft.notes || '').trim();
 
-      setSchedules((prev) => ({
-        ...prev,
-        [key]: {
-          ...getDefaultScheduleItem(key),
-          ...draft,
+      try {
+        await appApiCall('/schedules/save', {
+          key,
           venue: cleanedVenue,
-          timeRange: cleanedTime
-        }
-      }));
-
-      setScheduleDrafts((prev) => {
-        const next = { ...prev };
-        delete next[key];
-        return next;
-      });
-      setEditingScheduleKey(null);
-      showToast(`บันทึกสถานที่และเวลาแข่งขัน "${compName} (${lvlName})" เรียบร้อยแล้ว`);
+          dateLabel: cleanedDate,
+          timeRange: cleanedTime,
+          notes: cleanedNotes
+        });
+        setScheduleDrafts((prev) => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+        setEditingScheduleKey(null);
+        showToast(`บันทึกสถานที่และเวลาแข่งขัน "${compName} (${lvlName})" เรียบร้อยแล้ว`);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถบันทึกตารางการแข่งขันได้', 'error');
+      }
     };
 
     return (
@@ -6976,7 +6722,7 @@ export default function App() {
                   <div><strong>เวลา:</strong> {sched.timeRange}</div>
                   <div className="pt-1 mt-1 text-sky-900">
                     <div><strong>ชื่อผู้ใช้:</strong> <span className="font-mono">{jdg.username || '-'}</span></div>
-                    <div><strong>รหัสผ่าน:</strong> <span className="font-mono">{jdg.password || '-'}</span></div>
+                    <div><strong>รหัสผ่าน:</strong> <span className="font-mono">••••••••</span></div>
                   </div>
                 </div>
 
@@ -8209,19 +7955,15 @@ export default function App() {
         : Array.from(new Set(COMPETITIONS.flatMap((c) => c.levels))))
     ];
 
-    const toggleApprove = (metaKey: string) => {
-      setEvalMeta((prev) => {
-        const cur = prev[metaKey] || { status: 'judging', approved: false };
-        const nextApproved = !cur.approved;
-        return {
-          ...prev,
-          [metaKey]: {
-            status: nextApproved ? 'completed' : 'judging',
-            approved: nextApproved
-          }
-        };
-      });
-      showToast('อัปเดตสถานะการอนุมัติผลการแข่งขันเรียบร้อยแล้ว');
+    const toggleApprove = async (metaKey: string) => {
+      const cur = evalMeta[metaKey] || { status: 'judging', approved: false };
+      const nextApproved = !cur.approved;
+      try {
+        const res = await appApiCall('/admin/approval', { metaKey, approved: nextApproved });
+        showToast(res.message || 'อัปเดตสถานะการอนุมัติผลการแข่งขันเรียบร้อยแล้ว');
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถอัปเดตสถานะการอนุมัติได้', 'error');
+      }
     };
 
     const getMedalCategory = (label: string): 'gold' | 'silver' | 'bronze' | 'participant' => {
@@ -9123,7 +8865,7 @@ export default function App() {
       0
     );
 
-    const handleAddOrUpdateCriterion = (e: React.FormEvent) => {
+    const handleAddOrUpdateCriterion = async (e: React.FormEvent) => {
       e.preventDefault();
       const trimmedLabel = newCriterionLabel.trim();
       const numericMax = Number(newCriterionMax);
@@ -9146,6 +8888,8 @@ export default function App() {
             maxLabel: `${c.max} คะแนน`
           }));
 
+      let nextList: CriterionItem[];
+      let successMsg: string;
       if (editingCriterionIdx !== null && baseList[editingCriterionIdx]) {
         const existingKey = baseList[editingCriterionIdx].key;
         baseList[editingCriterionIdx] = {
@@ -9154,34 +8898,30 @@ export default function App() {
           max: numericMax,
           maxLabel: `${numericMax} คะแนน`
         };
-        setCustomCriteriaByComp((prev) => ({
-          ...prev,
-          [selectedComp.id]: baseList
-        }));
+        nextList = baseList;
+        successMsg = `แก้ไขเกณฑ์การตัดสินของ "${selectedComp.name}" เรียบร้อยแล้ว`;
+      } else {
+        nextList = [
+          ...baseList,
+          {
+            key: `crit_${selectedComp.id}_${Date.now()}_${baseList.length + 1}`,
+            label: trimmedLabel,
+            max: numericMax,
+            maxLabel: `${numericMax} คะแนน`
+          }
+        ];
+        successMsg = `เพิ่มเกณฑ์การตัดสินใน "${selectedComp.name}" เรียบร้อยแล้ว`;
+      }
+
+      try {
+        await appApiCall('/criteria/save', { competitionId: selectedComp.id, criteria: nextList });
         setEditingCriterionIdx(null);
         setNewCriterionLabel('');
         setNewCriterionMax('10');
-        showToast(`แก้ไขเกณฑ์การตัดสินของ "${selectedComp.name}" เรียบร้อยแล้ว`);
-        return;
+        showToast(successMsg);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถบันทึกเกณฑ์การตัดสินได้', 'error');
       }
-
-      const nextList = [
-        ...baseList,
-        {
-          key: `crit_${selectedComp.id}_${Date.now()}_${baseList.length + 1}`,
-          label: trimmedLabel,
-          max: numericMax,
-          maxLabel: `${numericMax} คะแนน`
-        }
-      ];
-
-      setCustomCriteriaByComp((prev) => ({
-        ...prev,
-        [selectedComp.id]: nextList
-      }));
-      setNewCriterionLabel('');
-      setNewCriterionMax('10');
-      showToast(`เพิ่มเกณฑ์การตัดสินใน "${selectedComp.name}" เรียบร้อยแล้ว`);
     };
 
     const handleStartEditCriterion = (idx: number) => {
@@ -9192,7 +8932,7 @@ export default function App() {
       setNewCriterionMax(String(target.max));
     };
 
-    const handleDeleteCriterion = (idx: number) => {
+    const handleDeleteCriterion = async (idx: number) => {
       const baseList = hasCustomCriteria
         ? [...customCriteriaByComp[selectedComp.id]]
         : getCompetitionCriteria(selectedComp.id, null).map((c) => ({
@@ -9208,28 +8948,29 @@ export default function App() {
       }
 
       const filtered = baseList.filter((_, i) => i !== idx);
-      setCustomCriteriaByComp((prev) => ({
-        ...prev,
-        [selectedComp.id]: filtered
-      }));
-      if (editingCriterionIdx === idx) {
+      try {
+        await appApiCall('/criteria/save', { competitionId: selectedComp.id, criteria: filtered });
+        if (editingCriterionIdx === idx) {
+          setEditingCriterionIdx(null);
+          setNewCriterionLabel('');
+          setNewCriterionMax('10');
+        }
+        showToast('ลบเกณฑ์การตัดสินเรียบร้อยแล้ว');
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถลบเกณฑ์การตัดสินได้', 'error');
+      }
+    };
+
+    const handleResetDefaultCriteria = async () => {
+      try {
+        await appApiCall('/criteria/reset', { competitionId: selectedComp.id });
         setEditingCriterionIdx(null);
         setNewCriterionLabel('');
         setNewCriterionMax('10');
+        showToast(`คืนค่าเกณฑ์เริ่มต้นของ "${selectedComp.name}" เรียบร้อยแล้ว`);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถคืนค่าเกณฑ์เริ่มต้นได้', 'error');
       }
-      showToast('ลบเกณฑ์การตัดสินเรียบร้อยแล้ว');
-    };
-
-    const handleResetDefaultCriteria = () => {
-      setCustomCriteriaByComp((prev) => {
-        const next = { ...prev };
-        delete next[selectedComp.id];
-        return next;
-      });
-      setEditingCriterionIdx(null);
-      setNewCriterionLabel('');
-      setNewCriterionMax('10');
-      showToast(`คืนค่าเกณฑ์เริ่มต้นของ "${selectedComp.name}" เรียบร้อยแล้ว`);
     };
 
     return (
@@ -9590,131 +9331,128 @@ export default function App() {
       );
     }
 
-    const handleSaveSchoolAdmin = (e: React.FormEvent) => {
+    const handleSaveSchoolAdmin = async (e: React.FormEvent) => {
       e.preventDefault();
-      if (!adminSchoolForm.schoolCode.trim() || !adminSchoolForm.name.trim() || !adminSchoolForm.password.trim()) {
-        showToast('กรุณากรอกข้อมูลโรงเรียนให้ครบถ้วน', 'error');
+      if (!adminSchoolForm.schoolCode.trim() || !adminSchoolForm.name.trim()) {
+        showToast('กรุณากรอกรหัสสถานศึกษาและชื่อโรงเรียนให้ครบถ้วน', 'error');
         return;
       }
-      if (adminSchoolForm.id) {
-        setSchools((prev) =>
-          prev.map((s) =>
-            s.id === adminSchoolForm.id
-              ? {
-                  ...s,
-                  schoolCode: adminSchoolForm.schoolCode.trim(),
-                  password: adminSchoolForm.password.trim(),
-                  name: adminSchoolForm.name.trim(),
-                  director: adminSchoolForm.director.trim(),
-                  phone: adminSchoolForm.phone.trim()
-                }
-              : s
-          )
-        );
-        showToast('แก้ไขข้อมูลโรงเรียนและรหัสผ่านเรียบร้อยแล้ว');
-      } else {
-        const created = {
-          id: `sch-${adminSchoolForm.schoolCode.trim()}-${Date.now()}`,
+      if (!adminSchoolForm.id && !adminSchoolForm.password.trim()) {
+        showToast('กรุณากำหนดรหัสผ่านสำหรับโรงเรียนใหม่', 'error');
+        return;
+      }
+      try {
+        const res = await appApiCall('/admin/schools/save', {
+          id: adminSchoolForm.id || undefined,
           schoolCode: adminSchoolForm.schoolCode.trim(),
-          password: adminSchoolForm.password.trim(),
           name: adminSchoolForm.name.trim(),
           director: adminSchoolForm.director.trim() || '-',
-          phone: adminSchoolForm.phone.trim() || '-'
-        };
-        setSchools((prev) => [...prev, created]);
-        showToast('เพิ่มโรงเรียนเข้าสู่ระบบเรียบร้อยแล้ว');
+          phone: adminSchoolForm.phone.trim() || '-',
+          password: adminSchoolForm.password.trim()
+        });
+        setAdminSchoolForm({ id: null, schoolCode: '', password: '', name: '', director: '', phone: '' });
+        showToast(res.message || 'บันทึกข้อมูลโรงเรียนเรียบร้อยแล้ว');
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถบันทึกข้อมูลโรงเรียนได้', 'error');
       }
-      setAdminSchoolForm({ id: null, schoolCode: '', password: '', name: '', director: '', phone: '' });
     };
 
-    const handleSaveJudgeAdmin = (e: React.FormEvent) => {
+    const handleDeleteSchoolAdmin = async (schoolId: string) => {
+      try {
+        const res = await appApiCall('/admin/schools/delete', { id: schoolId });
+        showToast(res.message || 'ลบโรงเรียนเรียบร้อยแล้ว');
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถลบโรงเรียนได้', 'error');
+      }
+    };
+
+    const handleSaveJudgeAdmin = async (e: React.FormEvent) => {
       e.preventDefault();
-      if (!adminJudgeForm.username.trim() || !adminJudgeForm.password.trim() || !adminJudgeForm.name.trim()) {
-        showToast('กรุณากรอกข้อมูลกรรมการ Username และ Password ให้ครบถ้วน', 'error');
+      if (!adminJudgeForm.username.trim() || !adminJudgeForm.name.trim()) {
+        showToast('กรุณากรอก Username และชื่อ-นามสกุลกรรมการให้ครบถ้วน', 'error');
         return;
       }
-      if (adminJudgeForm.id) {
-        setJudges((prev) =>
-          prev.map((j) =>
-            j.id === adminJudgeForm.id
-              ? {
-                  ...j,
-                  username: adminJudgeForm.username.trim(),
-                  password: adminJudgeForm.password.trim(),
-                  name: adminJudgeForm.name.trim(),
-                  position: adminJudgeForm.position.trim(),
-                  competitionId: adminJudgeForm.competitionId,
-                  level: adminJudgeForm.level,
-                  photoUrl: adminJudgeForm.photoUrl
-                }
-              : j
-          )
-        );
-        showToast('แก้ไขข้อมูลกรรมการเรียบร้อยแล้ว');
-      } else {
-        setJudges((prev) => [
-          ...prev,
-          {
-            id: `jdg-${Date.now()}`,
-            username: adminJudgeForm.username.trim(),
-            password: adminJudgeForm.password.trim(),
-            name: adminJudgeForm.name.trim(),
-            position: adminJudgeForm.position || 'กรรมการตัดสิน',
-            competitionId: adminJudgeForm.competitionId,
-            level: adminJudgeForm.level,
-            photoUrl: adminJudgeForm.photoUrl
-          }
-        ]);
-        showToast('เพิ่มกรรมการตัดสินเรียบร้อยแล้ว');
+      if (!adminJudgeForm.id && !adminJudgeForm.password.trim()) {
+        showToast('กรุณากำหนดรหัสผ่านสำหรับกรรมการใหม่', 'error');
+        return;
       }
-      setAdminJudgeForm({
-        id: null,
-        username: '',
-        password: '',
-        name: '',
-        position: 'กรรมการตัดสิน',
-        competitionId: COMPETITIONS[0].id,
-        level: COMPETITIONS[0].levels[0],
-        photoUrl: ''
-      });
+      try {
+        const res = await appApiCall('/admin/judges/save', {
+          id: adminJudgeForm.id || undefined,
+          username: adminJudgeForm.username.trim(),
+          password: adminJudgeForm.password.trim(),
+          name: adminJudgeForm.name.trim(),
+          position: adminJudgeForm.position.trim() || 'กรรมการตัดสิน',
+          competitionId: adminJudgeForm.competitionId,
+          level: adminJudgeForm.level,
+          photoUrl: adminJudgeForm.photoUrl
+        });
+        setAdminJudgeForm({
+          id: null,
+          username: '',
+          password: '',
+          name: '',
+          position: 'กรรมการตัดสิน',
+          competitionId: COMPETITIONS[0].id,
+          level: COMPETITIONS[0].levels[0],
+          photoUrl: ''
+        });
+        showToast(res.message || 'บันทึกข้อมูลกรรมการเรียบร้อยแล้ว');
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถบันทึกข้อมูลกรรมการได้', 'error');
+      }
+    };
+
+    const handleDeleteJudgeAdmin = async (judgeId: string) => {
+      try {
+        const res = await appApiCall('/admin/judges/delete', { id: judgeId });
+        showToast(res.message || 'ลบข้อมูลกรรมการเรียบร้อยแล้ว');
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถลบข้อมูลกรรมการได้', 'error');
+      }
+    };
+
+    const handleJudgePhotoAdminUpload = async (file?: File) => {
+      if (!file) return;
+      const uploadedUrl = await uploadImageToServer(file, 'judges', 600, 0.85);
+      if (!uploadedUrl) return;
+      setAdminJudgeForm((p) => ({ ...p, photoUrl: uploadedUrl }));
     };
 
     const handleBgFileUpload = async (
       file: File | undefined,
       bgKey: BackgroundKey,
-      setter: React.Dispatch<React.SetStateAction<string>>
+      _setter: React.Dispatch<React.SetStateAction<string>>
     ) => {
       if (!file) return;
+      setIsUploadingImage(true);
       try {
         const maxDim = bgKey === 'bannerBgUrl' ? 1920 : 1600;
         const compressed = await compressImageFile(file, maxDim, 0.85);
-        const safeUrl = safeImageUrl(compressed);
-        if (!safeUrl) {
+        if (!compressed || !compressed.startsWith('data:image/')) {
           showToast('ไม่สามารถใช้งานไฟล์รูปภาพนี้ได้ กรุณาเลือกไฟล์ PNG, JPG หรือ WebP', 'error');
           return;
         }
-        setter(safeUrl);
-        const cacheSaved = saveBackgroundCache(bgKey, safeUrl);
-        const idbSaved = await saveBackgroundToIdb(bgKey, safeUrl);
-        if (!cacheSaved && !idbSaved) {
-          showToast('พื้นที่จัดเก็บของเบราว์เซอร์เต็ม ไม่สามารถบันทึกภาพพื้นหลังได้', 'error');
-          return;
-        }
-        showToast('บันทึกภาพพื้นหลังลงในระบบเรียบร้อยแล้ว');
-      } catch {
-        showToast('เกิดข้อผิดพลาดในการอัปโหลดภาพพื้นหลัง กรุณาลองใหม่อีกครั้ง', 'error');
+        const res = await appApiCall('/admin/backgrounds', { key: bgKey, dataUrl: compressed });
+        showToast(res.message || 'บันทึกภาพพื้นหลังลงบนเซิร์ฟเวอร์เรียบร้อยแล้ว');
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'เกิดข้อผิดพลาดในการอัปโหลดภาพพื้นหลัง', 'error');
+      } finally {
+        setIsUploadingImage(false);
       }
     };
 
     const handleBgFileRemove = async (
       bgKey: BackgroundKey,
-      setter: React.Dispatch<React.SetStateAction<string>>,
+      _setter: React.Dispatch<React.SetStateAction<string>>,
       message: string
     ) => {
-      setter('');
-      saveBackgroundCache(bgKey, '');
-      await saveBackgroundToIdb(bgKey, '');
-      showToast(message);
+      try {
+        await appApiCall('/admin/backgrounds', { key: bgKey, dataUrl: '' });
+        showToast(message);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถลบรูปภาพพื้นหลังได้', 'error');
+      }
     };
 
     const selectedJudgeComp = COMPETITIONS.find((c) => c.id === adminJudgeForm.competitionId) || COMPETITIONS[0];
@@ -9729,12 +9467,16 @@ export default function App() {
       { id: 'results', label: 'ประกาศผลคะแนน' }
     ];
 
-    const toggleMenuPermission = (menuId: string, label: string) => {
-      setMenuPermissions((prev) => {
-        const nextOpen = !prev[menuId];
+    const toggleMenuPermission = async (menuId: string, label: string) => {
+      const nextOpen = !menuPermissions[menuId];
+      try {
+        await appApiCall('/admin/settings', {
+          menuPermissions: { ...menuPermissions, [menuId]: nextOpen }
+        });
         showToast(`${nextOpen ? 'เปิดใช้งาน' : 'ปิดใช้งาน'}เมนู "${label}" เรียบร้อยแล้ว`);
-        return { ...prev, [menuId]: nextOpen };
-      });
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถบันทึกการตั้งค่าเมนูได้', 'error');
+      }
     };
 
     return (
@@ -9754,17 +9496,23 @@ export default function App() {
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  setMenuPermissions({
-                    'student-card': true,
-                    'coach-card': true,
-                    'judge-card': true,
-                    'judge-cert': true,
-                    'school-cert': true,
-                    'school-results': true,
-                    'results': true
-                  });
-                  showToast('เปิดใช้งานทุกเมนูเรียบร้อยแล้ว');
+                onClick={async () => {
+                  try {
+                    await appApiCall('/admin/settings', {
+                      menuPermissions: {
+                        'student-card': true,
+                        'coach-card': true,
+                        'judge-card': true,
+                        'judge-cert': true,
+                        'school-cert': true,
+                        'school-results': true,
+                        'results': true
+                      }
+                    });
+                    showToast('เปิดใช้งานทุกเมนูเรียบร้อยแล้ว');
+                  } catch (err) {
+                    showToast(err instanceof Error ? err.message : 'บันทึกการตั้งค่าไม่สำเร็จ', 'error');
+                  }
                 }}
                 className="px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold border border-emerald-200 cursor-pointer"
               >
@@ -9772,17 +9520,23 @@ export default function App() {
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setMenuPermissions({
-                    'student-card': false,
-                    'coach-card': false,
-                    'judge-card': false,
-                    'judge-cert': false,
-                    'school-cert': false,
-                    'school-results': false,
-                    'results': false
-                  });
-                  showToast('ปิดใช้งานเมนูทั้งหมดชั่วคราวเรียบร้อยแล้ว');
+                onClick={async () => {
+                  try {
+                    await appApiCall('/admin/settings', {
+                      menuPermissions: {
+                        'student-card': false,
+                        'coach-card': false,
+                        'judge-card': false,
+                        'judge-cert': false,
+                        'school-cert': false,
+                        'school-results': false,
+                        'results': false
+                      }
+                    });
+                    showToast('ปิดใช้งานเมนูทั้งหมดชั่วคราวเรียบร้อยแล้ว');
+                  } catch (err) {
+                    showToast(err instanceof Error ? err.message : 'บันทึกการตั้งค่าไม่สำเร็จ', 'error');
+                  }
                 }}
                 className="px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold border border-rose-200 cursor-pointer"
               >
@@ -9811,7 +9565,7 @@ export default function App() {
                   </div>
                   <button
                     type="button"
-                    onClick={() => toggleMenuPermission(m.id, m.label)}
+                    onClick={() => void toggleMenuPermission(m.id, m.label)}
                     className={`shrink-0 inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold text-white shadow-sm cursor-pointer ${
                       isOpen ? 'bg-rose-600 hover:bg-rose-700' : 'bg-emerald-600 hover:bg-emerald-700'
                     }`}
@@ -9841,9 +9595,14 @@ export default function App() {
               </span>
               <button
                 type="button"
-                onClick={() => {
-                  setRegistrationOpen((prev) => !prev);
-                  showToast(!registrationOpen ? 'เปิดรับสมัครแข่งขันแล้ว' : 'ปิดรับสมัครแข่งขันแล้ว');
+                onClick={async () => {
+                  const nextOpen = !registrationOpen;
+                  try {
+                    await appApiCall('/admin/settings', { registrationOpen: nextOpen });
+                    showToast(nextOpen ? 'เปิดรับสมัครแข่งขันแล้ว' : 'ปิดรับสมัครแข่งขันแล้ว');
+                  } catch (err) {
+                    showToast(err instanceof Error ? err.message : 'บันทึกสถานะรับสมัครไม่สำเร็จ', 'error');
+                  }
                 }}
                 className={`px-4 py-2 rounded-xl text-xs font-bold text-white shadow-sm cursor-pointer ${
                   registrationOpen ? 'bg-rose-600 hover:bg-rose-700' : 'bg-emerald-600 hover:bg-emerald-700'
@@ -9867,6 +9626,7 @@ export default function App() {
                   <input
                     type="file"
                     accept="image/*"
+                    disabled={isUploadingImage}
                     className="hidden"
                     onChange={(e) => {
                       const f = e.target.files?.[0];
@@ -9879,7 +9639,7 @@ export default function App() {
                   <div className="flex items-center justify-between gap-2 rounded-lg border border-sky-200 bg-sky-50/40 px-2.5 py-1.5">
                     <div className="flex items-center gap-2 min-w-0">
                       <img src={bannerBgUrl} alt="ตัวอย่างแบนเนอร์" className="w-20 h-9 rounded object-contain bg-white border border-sky-200 shrink-0" />
-                      <span className="text-[11px] font-semibold text-emerald-700 truncate">บันทึกในระบบแล้ว</span>
+                      <span className="text-[11px] font-semibold text-emerald-700 truncate">จัดเก็บบนเซิร์ฟเวอร์แล้ว</span>
                     </div>
                     <button
                       type="button"
@@ -9903,6 +9663,7 @@ export default function App() {
                   <input
                     type="file"
                     accept="image/*"
+                    disabled={isUploadingImage}
                     className="hidden"
                     onChange={(e) => {
                       const f = e.target.files?.[0];
@@ -9915,7 +9676,7 @@ export default function App() {
                   <div className="flex items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50/40 px-2.5 py-1.5">
                     <div className="flex items-center gap-2 min-w-0">
                       <img src={studentCardBgUrl} alt="ตัวอย่างพื้นหลังบัตรผู้เข้าแข่งขัน" className="w-8 h-10 rounded object-cover border border-amber-200 shrink-0" />
-                      <span className="text-[11px] font-semibold text-emerald-700 truncate">บันทึกในระบบแล้ว</span>
+                      <span className="text-[11px] font-semibold text-emerald-700 truncate">จัดเก็บบนเซิร์ฟเวอร์แล้ว</span>
                     </div>
                     <button
                       type="button"
@@ -9935,6 +9696,7 @@ export default function App() {
                   <input
                     type="file"
                     accept="image/*"
+                    disabled={isUploadingImage}
                     className="hidden"
                     onChange={(e) => {
                       const f = e.target.files?.[0];
@@ -9947,7 +9709,7 @@ export default function App() {
                   <div className="flex items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50/40 px-2.5 py-1.5">
                     <div className="flex items-center gap-2 min-w-0">
                       <img src={coachCardBgUrl} alt="ตัวอย่างพื้นหลังบัตรครูผู้ฝึกสอน" className="w-8 h-10 rounded object-cover border border-emerald-200 shrink-0" />
-                      <span className="text-[11px] font-semibold text-emerald-700 truncate">บันทึกในระบบแล้ว</span>
+                      <span className="text-[11px] font-semibold text-emerald-700 truncate">จัดเก็บบนเซิร์ฟเวอร์แล้ว</span>
                     </div>
                     <button
                       type="button"
@@ -9967,6 +9729,7 @@ export default function App() {
                   <input
                     type="file"
                     accept="image/*"
+                    disabled={isUploadingImage}
                     className="hidden"
                     onChange={(e) => {
                       const f = e.target.files?.[0];
@@ -9979,7 +9742,7 @@ export default function App() {
                   <div className="flex items-center justify-between gap-2 rounded-lg border border-indigo-200 bg-indigo-50/40 px-2.5 py-1.5">
                     <div className="flex items-center gap-2 min-w-0">
                       <img src={judgeCardBgUrl} alt="ตัวอย่างพื้นหลังบัตรกรรมการ" className="w-8 h-10 rounded object-cover border border-indigo-200 shrink-0" />
-                      <span className="text-[11px] font-semibold text-emerald-700 truncate">บันทึกในระบบแล้ว</span>
+                      <span className="text-[11px] font-semibold text-emerald-700 truncate">จัดเก็บบนเซิร์ฟเวอร์แล้ว</span>
                     </div>
                     <button
                       type="button"
@@ -9999,6 +9762,7 @@ export default function App() {
                   <input
                     type="file"
                     accept="image/*"
+                    disabled={isUploadingImage}
                     className="hidden"
                     onChange={(e) => {
                       const f = e.target.files?.[0];
@@ -10011,7 +9775,7 @@ export default function App() {
                   <div className="flex items-center justify-between gap-2 rounded-lg border border-teal-200 bg-teal-50/40 px-3 py-2">
                     <div className="flex items-center gap-2.5 min-w-0">
                       <img src={certBgUrl} alt="ตัวอย่างพื้นหลังเกียรติบัตร" className="w-14 h-10 rounded object-cover border border-teal-200 shrink-0" />
-                      <span className="text-xs font-semibold text-emerald-700 truncate">บันทึกพื้นหลังเกียรติบัตรในระบบแล้ว</span>
+                      <span className="text-xs font-semibold text-emerald-700 truncate">จัดเก็บพื้นหลังเกียรติบัตรบนเซิร์ฟเวอร์แล้ว</span>
                     </div>
                     <button
                       type="button"
@@ -10058,7 +9822,7 @@ export default function App() {
             />
             <input
               type="text"
-              placeholder="รหัสผ่าน (Password)"
+              placeholder={adminSchoolForm.id ? 'รหัสผ่านใหม่ (เว้นว่างถ้าไม่เปลี่ยน)' : 'รหัสผ่าน (Password)'}
               value={adminSchoolForm.password}
               onChange={(e) => setAdminSchoolForm((p) => ({ ...p, password: e.target.value }))}
               className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-amber-500"
@@ -10099,21 +9863,18 @@ export default function App() {
                     <td className="py-2.5 px-3 font-mono font-bold text-slate-700">{s.schoolCode}</td>
                     <td className="py-2.5 px-3 font-semibold text-slate-800">{s.name}</td>
                     <td className="py-2.5 px-3 text-slate-600">{s.director}</td>
-                    <td className="py-2.5 px-3 font-mono text-amber-700">{s.password}</td>
+                    <td className="py-2.5 px-3 font-mono text-emerald-700 text-xs">•••••••• (เข้ารหัสแล้ว)</td>
                     <td className="py-2.5 px-3 text-right space-x-1">
                       <button
                         type="button"
-                        onClick={() => setAdminSchoolForm(s)}
+                        onClick={() => setAdminSchoolForm({ ...s, password: '' })}
                         className="p-1.5 rounded-lg bg-sky-50 text-sky-600 hover:bg-sky-100 cursor-pointer"
                       >
                         <Edit3 className="w-4 h-4" />
                       </button>
                       <button
                         type="button"
-                        onClick={() => {
-                          setSchools((prev) => prev.filter((item) => item.id !== s.id));
-                          showToast('ลบโรงเรียนเรียบร้อยแล้ว');
-                        }}
+                        onClick={() => void handleDeleteSchoolAdmin(s.id)}
                         className="p-1.5 rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-100 cursor-pointer"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -10130,94 +9891,131 @@ export default function App() {
         <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 space-y-5">
           <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
             <Gavel className="w-5 h-5 text-sky-600" />
-            <span>จัดการระบบกรรมการตัดสินแบบเต็มรูปแบบ (กำหนด User / Password / ตำแหน่ง / กิจกรรม / ระดับ)</span>
+            <span>จัดการระบบกรรมการตัดสินแบบเต็มรูปแบบ (กำหนด User / Password / ตำแหน่ง / กิจกรรม / ระดับ / รูปภาพ)</span>
           </h3>
 
-          <form onSubmit={handleSaveJudgeAdmin} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-3">
-            <input
-              type="text"
-              placeholder="Username กรรมการ"
-              value={adminJudgeForm.username}
-              onChange={(e) => setAdminJudgeForm((p) => ({ ...p, username: e.target.value }))}
-              className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-500"
-            />
-            <input
-              type="text"
-              placeholder="Password กรรมการ"
-              value={adminJudgeForm.password}
-              onChange={(e) => setAdminJudgeForm((p) => ({ ...p, password: e.target.value }))}
-              className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-500"
-            />
-            <input
-              type="text"
-              placeholder="ชื่อ-นามสกุล กรรมการ"
-              value={adminJudgeForm.name}
-              onChange={(e) => setAdminJudgeForm((p) => ({ ...p, name: e.target.value }))}
-              className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-500"
-            />
-            <select
-              value={adminJudgeForm.position}
-              onChange={(e) => setAdminJudgeForm((p) => ({ ...p, position: e.target.value }))}
-              className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-500"
-            >
-              <option value="ประธานกรรมการตัดสิน">ประธานกรรมการตัดสิน</option>
-              <option value="กรรมการตัดสิน">กรรมการตัดสิน</option>
-            </select>
-            <select
-              value={adminJudgeForm.competitionId}
-              onChange={(e) => {
-                const nextComp = COMPETITIONS.find((c) => c.id === e.target.value) || COMPETITIONS[0];
-                setAdminJudgeForm((p) => ({
-                  ...p,
-                  competitionId: nextComp.id,
-                  level: nextComp.levels[0]
-                }));
-              }}
-              className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-500"
-            >
-              {COMPETITIONS.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-            <select
-              value={adminJudgeForm.level}
-              onChange={(e) => setAdminJudgeForm((p) => ({ ...p, level: e.target.value }))}
-              className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-500"
-            >
-              {selectedJudgeComp.levels.map((lvl) => (
-                <option key={lvl} value={lvl}>
-                  {lvl}
-                </option>
-              ))}
-            </select>
-            <div className="flex gap-2">
-              <button
-                type="submit"
-                className="flex-1 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold text-sm py-2 px-3 cursor-pointer"
+          <form onSubmit={handleSaveJudgeAdmin} className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-3">
+              <input
+                type="text"
+                placeholder="Username กรรมการ"
+                value={adminJudgeForm.username}
+                onChange={(e) => setAdminJudgeForm((p) => ({ ...p, username: e.target.value }))}
+                className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-500"
+              />
+              <input
+                type="text"
+                placeholder={adminJudgeForm.id ? 'Password ใหม่ (เว้นว่างถ้าไม่เปลี่ยน)' : 'Password กรรมการ'}
+                value={adminJudgeForm.password}
+                onChange={(e) => setAdminJudgeForm((p) => ({ ...p, password: e.target.value }))}
+                className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-500"
+              />
+              <input
+                type="text"
+                placeholder="ชื่อ-นามสกุล กรรมการ"
+                value={adminJudgeForm.name}
+                onChange={(e) => setAdminJudgeForm((p) => ({ ...p, name: e.target.value }))}
+                className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-500"
+              />
+              <select
+                value={adminJudgeForm.position}
+                onChange={(e) => setAdminJudgeForm((p) => ({ ...p, position: e.target.value }))}
+                className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-500"
               >
-                {adminJudgeForm.id ? 'บันทึก' : '+ เพิ่มกรรมการ'}
-              </button>
-              {adminJudgeForm.id && (
+                <option value="ประธานกรรมการตัดสิน">ประธานกรรมการตัดสิน</option>
+                <option value="กรรมการตัดสิน">กรรมการตัดสิน</option>
+              </select>
+              <select
+                value={adminJudgeForm.competitionId}
+                onChange={(e) => {
+                  const nextComp = COMPETITIONS.find((c) => c.id === e.target.value) || COMPETITIONS[0];
+                  setAdminJudgeForm((p) => ({
+                    ...p,
+                    competitionId: nextComp.id,
+                    level: nextComp.levels[0]
+                  }));
+                }}
+                className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-500"
+              >
+                {COMPETITIONS.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={adminJudgeForm.level}
+                onChange={(e) => setAdminJudgeForm((p) => ({ ...p, level: e.target.value }))}
+                className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-500"
+              >
+                {selectedJudgeComp.levels.map((lvl) => (
+                  <option key={lvl} value={lvl}>
+                    {lvl}
+                  </option>
+                ))}
+              </select>
+              <div className="flex gap-2">
                 <button
-                  type="button"
-                  onClick={() =>
-                    setAdminJudgeForm({
-                      id: null,
-                      username: '',
-                      password: '',
-                      name: '',
-                      position: 'กรรมการตัดสิน',
-                      competitionId: COMPETITIONS[0].id,
-                      level: COMPETITIONS[0].levels[0],
-                      photoUrl: ''
-                    })
-                  }
-                  className="rounded-xl bg-slate-100 text-slate-600 px-2 text-xs font-bold cursor-pointer"
+                  type="submit"
+                  className="flex-1 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold text-sm py-2 px-3 cursor-pointer"
                 >
-                  ยกเลิก
+                  {adminJudgeForm.id ? 'บันทึก' : '+ เพิ่มกรรมการ'}
                 </button>
+                {adminJudgeForm.id && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setAdminJudgeForm({
+                        id: null,
+                        username: '',
+                        password: '',
+                        name: '',
+                        position: 'กรรมการตัดสิน',
+                        competitionId: COMPETITIONS[0].id,
+                        level: COMPETITIONS[0].levels[0],
+                        photoUrl: ''
+                      })
+                    }
+                    className="rounded-xl bg-slate-100 text-slate-600 px-2 text-xs font-bold cursor-pointer"
+                  >
+                    ยกเลิก
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2">
+              <label className="inline-flex items-center gap-2 text-xs font-bold text-sky-700 hover:text-sky-800 cursor-pointer">
+                <Upload className="w-4 h-4" />
+                <span>{adminJudgeForm.photoUrl ? 'เปลี่ยนรูปถ่ายกรรมการ' : 'อัปโหลดรูปถ่ายกรรมการ (บันทึกลงเซิร์ฟเวอร์)'}</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  disabled={isUploadingImage}
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    e.currentTarget.value = '';
+                    void handleJudgePhotoAdminUpload(f);
+                  }}
+                />
+              </label>
+              {adminJudgeForm.photoUrl && (
+                <div className="flex items-center gap-2">
+                  <img
+                    src={safeImageUrl(adminJudgeForm.photoUrl)}
+                    alt="รูปกรรมการ"
+                    className="w-9 h-10 rounded-lg object-cover object-top border border-sky-200 bg-white"
+                  />
+                  <span className="text-xs font-semibold text-emerald-700">บันทึกรูปแล้ว</span>
+                  <button
+                    type="button"
+                    onClick={() => setAdminJudgeForm((p) => ({ ...p, photoUrl: '' }))}
+                    className="text-xs font-semibold text-rose-600 hover:underline cursor-pointer"
+                  >
+                    ลบรูป
+                  </button>
+                </div>
               )}
             </div>
           </form>
@@ -10226,7 +10024,7 @@ export default function App() {
             <table className="w-full text-left border-collapse text-sm">
               <thead>
                 <tr className="bg-slate-50 text-slate-600 text-xs border-b border-slate-100">
-                  <th className="py-2.5 px-3">User / Pass</th>
+                  <th className="py-2.5 px-3">User / สถานะรหัส</th>
                   <th className="py-2.5 px-3">ชื่อกรรมการ</th>
                   <th className="py-2.5 px-3">ตำแหน่ง</th>
                   <th className="py-2.5 px-3">กิจกรรมที่รับผิดชอบ</th>
@@ -10240,26 +10038,34 @@ export default function App() {
                   return (
                     <tr key={j.id}>
                       <td className="py-2.5 px-3 font-mono text-xs">
-                        <strong>{j.username}</strong> / <span className="text-sky-700">{j.password}</span>
+                        <strong>{j.username}</strong> / <span className="text-sky-700">••••••••</span>
                       </td>
-                      <td className="py-2.5 px-3 font-semibold text-slate-800">{j.name}</td>
+                      <td className="py-2.5 px-3 font-semibold text-slate-800">
+                        <div className="flex items-center gap-2">
+                          {j.photoUrl && (
+                            <img
+                              src={safeImageUrl(j.photoUrl)}
+                              alt={j.name}
+                              className="w-7 h-7 rounded-full object-cover object-top border border-sky-200 shrink-0"
+                            />
+                          )}
+                          <span>{j.name}</span>
+                        </div>
+                      </td>
                       <td className="py-2.5 px-3 text-xs font-bold text-indigo-700">{j.position}</td>
                       <td className="py-2.5 px-3 text-slate-700">{comp?.name}</td>
                       <td className="py-2.5 px-3 text-xs font-semibold text-amber-800">{j.level}</td>
                       <td className="py-2.5 px-3 text-right space-x-1">
                         <button
                           type="button"
-                          onClick={() => setAdminJudgeForm(j)}
+                          onClick={() => setAdminJudgeForm({ ...j, password: '' })}
                           className="p-1.5 rounded-lg bg-sky-50 text-sky-600 hover:bg-sky-100 cursor-pointer"
                         >
                           <Edit3 className="w-4 h-4" />
                         </button>
                         <button
                           type="button"
-                          onClick={() => {
-                            setJudges((prev) => prev.filter((item) => item.id !== j.id));
-                            showToast('ลบข้อมูลกรรมการเรียบร้อยแล้ว');
-                          }}
+                          onClick={() => void handleDeleteJudgeAdmin(j.id)}
                           className="p-1.5 rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-100 cursor-pointer"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -10285,12 +10091,8 @@ export default function App() {
           </p>
 
           <form
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
-              if (adminCredForm.currentPass !== adminCredentials.password) {
-                showToast('รหัสผ่านปัจจุบันไม่ถูกต้อง', 'error');
-                return;
-              }
               const nextUser = adminCredForm.newUsername.trim();
               const nextName = adminCredForm.newDisplayName.trim() || adminCredentials.displayName;
               const nextPass = adminCredForm.newPass.trim();
@@ -10306,23 +10108,26 @@ export default function App() {
                 showToast('รหัสผ่านใหม่และยืนยันรหัสผ่านไม่ตรงกัน', 'error');
                 return;
               }
-              const updatedPass = nextPass || adminCredentials.password;
-              setAdminCredentials({
-                username: nextUser,
-                password: updatedPass,
-                displayName: nextName
-              });
-              setAuthSession((prev) =>
-                prev.role === 'admin' ? { ...prev, displayName: nextName } : prev
-              );
-              setAdminCredForm({
-                currentPass: '',
-                newUsername: nextUser,
-                newDisplayName: nextName,
-                newPass: '',
-                confirmNewPass: ''
-              });
-              showToast('อัปเดตข้อมูลและรหัสผ่านผู้ดูแลระบบเรียบร้อยแล้ว');
+              try {
+                await appApiCall('/admin/settings', {
+                  adminCredentials: {
+                    currentPass: adminCredForm.currentPass,
+                    newUsername: nextUser,
+                    newDisplayName: nextName,
+                    newPass: nextPass
+                  }
+                });
+                setAdminCredForm({
+                  currentPass: '',
+                  newUsername: nextUser,
+                  newDisplayName: nextName,
+                  newPass: '',
+                  confirmNewPass: ''
+                });
+                showToast('อัปเดตข้อมูลและรหัสผ่านผู้ดูแลระบบเรียบร้อยแล้ว');
+              } catch (err) {
+                showToast(err instanceof Error ? err.message : 'ไม่สามารถอัปเดตข้อมูล Admin ได้', 'error');
+              }
             }}
             className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3"
           >
@@ -10371,6 +10176,71 @@ export default function App() {
               </button>
             </div>
           </form>
+        </div>
+
+        {/* 5. ระบบจัดเก็บข้อมูลและไฟล์ภาพบนเซิร์ฟเวอร์ + สำรองข้อมูล */}
+        <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-teal-600" />
+                <span>ระบบจัดเก็บข้อมูลและไฟล์ภาพบนเซิร์ฟเวอร์ (Systematic Server Storage)</span>
+              </h3>
+              <p className="text-sm text-slate-500 mt-0.5">
+                ข้อมูลทั้งหมดจัดเก็บแยกเป็นหมวดหมู่บนเซิร์ฟเวอร์ (data/store/*.json) และรูปภาพจัดเก็บเป็นไฟล์จริงแยกโฟลเดอร์ (students / coaches / judges / backgrounds)
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleDownloadServerBackup()}
+              className="inline-flex items-center gap-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white px-4 py-2.5 text-xs sm:text-sm font-bold shadow-sm transition cursor-pointer shrink-0"
+            >
+              <Download className="w-4 h-4" />
+              <span>สำรองข้อมูลระบบ (.json)</span>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-center">
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+              <div className="text-xs text-slate-500">ไฟล์ภาพรวม</div>
+              <div className="text-lg font-extrabold text-slate-800 mt-0.5">
+                {storageStats ? storageStats.totalUploadFiles : 0} ไฟล์
+              </div>
+              <div className="text-[11px] text-slate-500">
+                {storageStats ? `${(storageStats.totalUploadBytes / 1024).toFixed(1)} KB` : '0 KB'}
+              </div>
+            </div>
+            <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-3">
+              <div className="text-xs text-amber-800">ภาพนักเรียน</div>
+              <div className="text-lg font-extrabold text-amber-900 mt-0.5">
+                {storageStats?.categories?.students?.files ?? 0}
+              </div>
+            </div>
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-3">
+              <div className="text-xs text-emerald-800">ภาพครูผู้ฝึกสอน</div>
+              <div className="text-lg font-extrabold text-emerald-900 mt-0.5">
+                {storageStats?.categories?.coaches?.files ?? 0}
+              </div>
+            </div>
+            <div className="rounded-xl border border-sky-200 bg-sky-50/50 p-3">
+              <div className="text-xs text-sky-800">ภาพกรรมการ</div>
+              <div className="text-lg font-extrabold text-sky-900 mt-0.5">
+                {storageStats?.categories?.judges?.files ?? 0}
+              </div>
+            </div>
+            <div className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-3">
+              <div className="text-xs text-indigo-800">พื้นหลัง/แบนเนอร์</div>
+              <div className="text-lg font-extrabold text-indigo-900 mt-0.5">
+                {storageStats?.categories?.backgrounds?.files ?? 0}
+              </div>
+            </div>
+            <div className="rounded-xl border border-teal-200 bg-teal-50/50 p-3">
+              <div className="text-xs text-teal-800">ชุดข้อมูลในระบบ</div>
+              <div className="text-xs font-bold text-teal-900 mt-1 leading-relaxed">
+                รร. {storageStats?.collections?.schools ?? schools.length} • ทีม {storageStats?.collections?.registrations ?? registrations.length} • กรรมการ {storageStats?.collections?.judges ?? judges.length}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -10449,14 +10319,13 @@ export default function App() {
       }));
     };
 
-    const handleSaveScores = (e: React.FormEvent) => {
+    const handleSaveScores = async (e: React.FormEvent) => {
       e.preventDefault();
       if (isApprovedByAdmin) {
         showToast('ผู้ดูแลระบบอนุมัติผลการแข่งขันแล้ว ไม่สามารถแก้ไขคะแนนได้', 'error');
         return;
       }
-      const nextScores = { ...scores };
-      const nextCriteriaDetails = { ...scoreCriteriaDetails };
+      const entries: Array<{ registrationId: string; criteria: Record<string, number | ''> }> = [];
       const newlySavedIds: string[] = [];
 
       for (const r of assignedRegs) {
@@ -10472,53 +10341,40 @@ export default function App() {
           );
           return;
         }
-
-        const cleanedDetail: Record<string, number> = {};
-        const rowDraft = draftCriteriaScores[r.id] || {};
-        criteriaList.forEach((crit) => {
-          const val = rowDraft[crit.key];
-          if (val !== '' && val !== undefined && !Number.isNaN(Number(val))) {
-            cleanedDetail[crit.key] = Number(val);
-          }
+        entries.push({
+          registrationId: r.id,
+          criteria: draftCriteriaScores[r.id] || {}
         });
-
-        nextScores[r.id] = {
-          ...(nextScores[r.id] || {}),
-          [currentJudge.id]: total
-        };
-        nextCriteriaDetails[r.id] = {
-          ...(nextCriteriaDetails[r.id] || {}),
-          [currentJudge.id]: cleanedDetail
-        };
         newlySavedIds.push(r.id);
       }
 
-      setScores(nextScores);
-      setScoreCriteriaDetails(nextCriteriaDetails);
-      if (newlySavedIds.length > 0) {
-        setUnlockedScoreCards((prev) => {
-          const next = { ...prev };
-          newlySavedIds.forEach((id) => {
-            delete next[id];
-          });
-          return next;
-        });
+      if (entries.length === 0) {
+        showToast('กรุณากรอกคะแนนอย่างน้อย 1 รายการก่อนบันทึก', 'error');
+        return;
       }
-      setEvalMeta((prev) => ({
-        ...prev,
-        [metaKey]: {
-          status: prev[metaKey]?.approved ? 'completed' : 'judging',
-          approved: Boolean(prev[metaKey]?.approved)
+
+      try {
+        await appApiCall('/judge/scores', { entries });
+        if (newlySavedIds.length > 0) {
+          setUnlockedScoreCards((prev) => {
+            const next = { ...prev };
+            newlySavedIds.forEach((id) => {
+              delete next[id];
+            });
+            return next;
+          });
         }
-      }));
-      showToast(
-        isDharmaQuiz
-          ? 'บันทึกคะแนนตามจำนวนข้อสอบที่ตอบถูกต้องเรียบร้อยแล้ว'
-          : 'บันทึกคะแนนเรียบร้อยแล้ว'
-      );
+        showToast(
+          isDharmaQuiz
+            ? 'บันทึกคะแนนตามจำนวนข้อสอบที่ตอบถูกต้องเรียบร้อยแล้ว'
+            : 'บันทึกคะแนนเรียบร้อยแล้ว'
+        );
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถบันทึกคะแนนได้', 'error');
+      }
     };
 
-    const handleSaveSingleTeamScore = (regItem: RegistrationItem) => {
+    const handleSaveSingleTeamScore = async (regItem: RegistrationItem) => {
       if (isApprovedByAdmin) {
         showToast('ผู้ดูแลระบบอนุมัติผลการแข่งขันแล้ว ไม่สามารถแก้ไขคะแนนได้', 'error');
         return;
@@ -10547,46 +10403,26 @@ export default function App() {
         return;
       }
 
-      const cleanedDetail: Record<string, number> = {};
-      const rowDraft = draftCriteriaScores[regItem.id] || {};
-      criteriaList.forEach((crit) => {
-        const val = rowDraft[crit.key];
-        if (val !== '' && val !== undefined && !Number.isNaN(Number(val))) {
-          cleanedDetail[crit.key] = Number(val);
-        }
-      });
-
-      setScores((prev) => ({
-        ...prev,
-        [regItem.id]: {
-          ...(prev[regItem.id] || {}),
-          [currentJudge.id]: total
-        }
-      }));
-      setScoreCriteriaDetails((prev) => ({
-        ...prev,
-        [regItem.id]: {
-          ...(prev[regItem.id] || {}),
-          [currentJudge.id]: cleanedDetail
-        }
-      }));
-      setUnlockedScoreCards((prev) => {
-        const next = { ...prev };
-        delete next[regItem.id];
-        return next;
-      });
-
-      setEvalMeta((prev) => ({
-        ...prev,
-        [metaKey]: {
-          status: prev[metaKey]?.approved ? 'completed' : 'judging',
-          approved: Boolean(prev[metaKey]?.approved)
-        }
-      }));
-
-      const teamSchool = schools.find((s) => s.id === regItem.schoolId);
-      const teamLabel = regItem.students.map((s) => s.name).join(', ') || teamSchool?.name || 'ทีมผู้เข้าแข่งขัน';
-      showToast(`บันทึกคะแนนของ "${teamLabel}" เรียบร้อยแล้ว`);
+      try {
+        await appApiCall('/judge/scores', {
+          entries: [
+            {
+              registrationId: regItem.id,
+              criteria: draftCriteriaScores[regItem.id] || {}
+            }
+          ]
+        });
+        setUnlockedScoreCards((prev) => {
+          const next = { ...prev };
+          delete next[regItem.id];
+          return next;
+        });
+        const teamSchool = schools.find((s) => s.id === regItem.schoolId);
+        const teamLabel = regItem.students.map((s) => s.name).join(', ') || teamSchool?.name || 'ทีมผู้เข้าแข่งขัน';
+        showToast(`บันทึกคะแนนของ "${teamLabel}" เรียบร้อยแล้ว`);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถบันทึกคะแนนได้', 'error');
+      }
     };
 
     const handleEnableEditTeamScore = (regId: string) => {
@@ -10600,7 +10436,7 @@ export default function App() {
       }));
     };
 
-    const handleToggleAbsentTeam = (regItem: RegistrationItem) => {
+    const handleToggleAbsentTeam = async (regItem: RegistrationItem) => {
       if (isApprovedByAdmin) {
         showToast('ผู้ดูแลระบบอนุมัติผลการแข่งขันแล้ว ไม่สามารถเปลี่ยนสถานะเข้าร่วมแข่งขันได้', 'error');
         return;
@@ -10611,47 +10447,30 @@ export default function App() {
       const teamLabel =
         regItem.students.map((s) => s.name).join(', ') || teamSchool?.name || 'ทีมผู้เข้าแข่งขัน';
 
-      setAbsentRegs((prev) => {
-        const next = { ...prev };
+      try {
+        await appApiCall('/judge/absent', { registrationId: regItem.id, absent: nextAbsent });
         if (nextAbsent) {
-          next[regItem.id] = true;
-        } else {
-          delete next[regItem.id];
-        }
-        return next;
-      });
-
-      if (nextAbsent) {
-        setScores((prev) => {
-          if (!prev[regItem.id]) return prev;
-          const next = { ...prev };
-          delete next[regItem.id];
-          return next;
-        });
-        setScoreCriteriaDetails((prev) => {
-          if (!prev[regItem.id]) return prev;
-          const next = { ...prev };
-          delete next[regItem.id];
-          return next;
-        });
-        setDraftCriteriaScores((prev) => {
-          const emptyRow: Record<string, number | ''> = {};
-          criteriaList.forEach((c) => {
-            emptyRow[c.key] = '';
+          setDraftCriteriaScores((prev) => {
+            const emptyRow: Record<string, number | ''> = {};
+            criteriaList.forEach((c) => {
+              emptyRow[c.key] = '';
+            });
+            return { ...prev, [regItem.id]: emptyRow };
           });
-          return { ...prev, [regItem.id]: emptyRow };
-        });
-        setUnlockedScoreCards((prev) => {
-          if (!prev[regItem.id]) return prev;
-          const next = { ...prev };
-          delete next[regItem.id];
-          return next;
-        });
-        showToast(
-          `แจ้งไม่เข้าร่วมแข่งขัน "${teamLabel}" เรียบร้อยแล้ว (ระบบจะงดออกเกียรติบัตรผู้เข้าแข่งขันและครูผู้ฝึกสอนให้ทีมนี้)`
-        );
-      } else {
-        showToast(`ยกเลิกสถานะไม่เข้าร่วมแข่งขัน "${teamLabel}" แล้ว สามารถกรอกคะแนนได้ตามปกติ`);
+          setUnlockedScoreCards((prev) => {
+            if (!prev[regItem.id]) return prev;
+            const next = { ...prev };
+            delete next[regItem.id];
+            return next;
+          });
+          showToast(
+            `แจ้งไม่เข้าร่วมแข่งขัน "${teamLabel}" เรียบร้อยแล้ว (ระบบจะงดออกเกียรติบัตรผู้เข้าแข่งขันและครูผู้ฝึกสอนให้ทีมนี้)`
+          );
+        } else {
+          showToast(`ยกเลิกสถานะไม่เข้าร่วมแข่งขัน "${teamLabel}" แล้ว สามารถกรอกคะแนนได้ตามปกติ`);
+        }
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถเปลี่ยนสถานะเข้าร่วมแข่งขันได้', 'error');
       }
     };
 
@@ -10934,7 +10753,7 @@ export default function App() {
       return schoolText.includes(searchQ) || studentText.includes(searchQ) || coachText.includes(searchQ);
     });
 
-    const handleToggleAbsentFromMenu = (regItem: RegistrationItem) => {
+    const handleToggleAbsentFromMenu = async (regItem: RegistrationItem) => {
       if (isApprovedByAdmin) {
         showToast('ผู้ดูแลระบบอนุมัติผลการแข่งขันแล้ว ไม่สามารถเปลี่ยนสถานะเข้าร่วมแข่งขันได้', 'error');
         return;
@@ -10945,46 +10764,29 @@ export default function App() {
       const teamLabel =
         regItem.students.map((s) => s.name).join(', ') || teamSchool?.name || 'ทีมผู้เข้าแข่งขัน';
 
-      setAbsentRegs((prev) => {
-        const next = { ...prev };
+      try {
+        await appApiCall('/judge/absent', { registrationId: regItem.id, absent: nextAbsent });
         if (nextAbsent) {
-          next[regItem.id] = true;
+          setDraftCriteriaScores((prev) => {
+            if (!prev[regItem.id]) return prev;
+            const next = { ...prev };
+            delete next[regItem.id];
+            return next;
+          });
+          setUnlockedScoreCards((prev) => {
+            if (!prev[regItem.id]) return prev;
+            const next = { ...prev };
+            delete next[regItem.id];
+            return next;
+          });
+          showToast(
+            `แจ้งไม่เข้าร่วมแข่งขัน "${teamLabel}" เรียบร้อยแล้ว และตัดรายชื่อออกจากระบบเกียรติบัตรผู้เข้าแข่งขันและครูผู้ฝึกสอนแล้ว`
+          );
         } else {
-          delete next[regItem.id];
+          showToast(`ยกเลิกแจ้งไม่เข้าร่วมแข่งขัน "${teamLabel}" เรียบร้อยแล้ว`);
         }
-        return next;
-      });
-
-      if (nextAbsent) {
-        setScores((prev) => {
-          if (!prev[regItem.id]) return prev;
-          const next = { ...prev };
-          delete next[regItem.id];
-          return next;
-        });
-        setScoreCriteriaDetails((prev) => {
-          if (!prev[regItem.id]) return prev;
-          const next = { ...prev };
-          delete next[regItem.id];
-          return next;
-        });
-        setDraftCriteriaScores((prev) => {
-          if (!prev[regItem.id]) return prev;
-          const next = { ...prev };
-          delete next[regItem.id];
-          return next;
-        });
-        setUnlockedScoreCards((prev) => {
-          if (!prev[regItem.id]) return prev;
-          const next = { ...prev };
-          delete next[regItem.id];
-          return next;
-        });
-        showToast(
-          `แจ้งไม่เข้าร่วมแข่งขัน "${teamLabel}" เรียบร้อยแล้ว และตัดรายชื่อออกจากระบบเกียรติบัตรผู้เข้าแข่งขันและครูผู้ฝึกสอนแล้ว`
-        );
-      } else {
-        showToast(`ยกเลิกแจ้งไม่เข้าร่วมแข่งขัน "${teamLabel}" เรียบร้อยแล้ว`);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถเปลี่ยนสถานะเข้าร่วมแข่งขันได้', 'error');
       }
     };
 
@@ -11820,15 +11622,22 @@ export default function App() {
                             <input
                               type="file"
                               accept="image/*"
+                              disabled={isUploadingImage}
                               className="hidden"
-                              onChange={(e) =>
-                                handleBySchoolEditPhotoUpload('student', idx, e.target.files?.[0])
-                              }
+                              onChange={(e) => {
+                                const f = e.target.files?.[0];
+                                e.currentTarget.value = '';
+                                void handleBySchoolEditPhotoUpload('student', idx, f);
+                              }}
                             />
                           </label>
                           {bySchoolEditForm.studentPhotos[idx] && (
                             <div className="flex items-center gap-2">
-                              <span className="text-emerald-700 font-semibold">มีรูปภาพแล้ว</span>
+                              <img
+                                src={safeImageUrl(bySchoolEditForm.studentPhotos[idx])}
+                                alt="รูปผู้เข้าแข่งขัน"
+                                className="w-9 h-9 rounded-lg object-cover object-top border border-amber-200 bg-white"
+                              />
                               <button
                                 type="button"
                                 onClick={() =>
@@ -11938,15 +11747,22 @@ export default function App() {
                             <input
                               type="file"
                               accept="image/*"
+                              disabled={isUploadingImage}
                               className="hidden"
-                              onChange={(e) =>
-                                handleBySchoolEditPhotoUpload('coach', idx, e.target.files?.[0])
-                              }
+                              onChange={(e) => {
+                                const f = e.target.files?.[0];
+                                e.currentTarget.value = '';
+                                void handleBySchoolEditPhotoUpload('coach', idx, f);
+                              }}
                             />
                           </label>
                           {bySchoolEditForm.coachPhotos[idx] && (
                             <div className="flex items-center gap-2">
-                              <span className="text-emerald-700 font-semibold">มีรูปภาพแล้ว</span>
+                              <img
+                                src={safeImageUrl(bySchoolEditForm.coachPhotos[idx])}
+                                alt="รูปครูผู้ฝึกสอน"
+                                className="w-9 h-9 rounded-lg object-cover object-top border border-emerald-200 bg-white"
+                              />
                               <button
                                 type="button"
                                 onClick={() =>

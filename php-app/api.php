@@ -57,21 +57,20 @@ function findCompetition(string $compId): ?array
     return null;
 }
 
-function saveValidatedImageDataUrl(string $dataUrl, string $prefix = 'img'): string
+function normalizeUploadCategory(string $category): string
 {
-    $trimmed = trim($dataUrl);
-    if ($trimmed === '') {
-        return '';
-    }
-    // Already a safe local uploads path
-    if (preg_match('/^uploads\/[a-zA-Z0-9_\-]+\.(png|jpg|jpeg|gif|webp)$/i', $trimmed)) {
-        return $trimmed;
-    }
-    if (!preg_match('/^data:image\/(png|jpeg|jpg|gif|webp);base64,([A-Za-z0-9+\/=]+)$/i', $trimmed, $matches)) {
-        return '';
-    }
-    $binary = base64_decode($matches[2], true);
-    if ($binary === false || strlen($binary) === 0 || strlen($binary) > 6 * 1024 * 1024) {
+    $clean = strtolower(trim($category));
+    return in_array($clean, UPLOAD_CATEGORIES, true) ? $clean : 'students';
+}
+
+function isSafeLocalUploadPath(string $path): bool
+{
+    return (bool)preg_match('/^uploads\/(?:(?:students|coaches|judges|backgrounds)\/)?[a-zA-Z0-9_\-]+\.(png|jpg|jpeg|gif|webp)$/i', trim($path));
+}
+
+function saveValidatedBinaryImage(string $binary, string $category = 'students', string $prefix = 'img'): string
+{
+    if ($binary === '' || strlen($binary) > 6 * 1024 * 1024) {
         return '';
     }
     $info = @getimagesizefromstring($binary);
@@ -90,25 +89,47 @@ function saveValidatedImageDataUrl(string $dataUrl, string $prefix = 'img'): str
     }
 
     ensureStorageDirs();
+    $cat = normalizeUploadCategory($category);
     $safePrefix = preg_replace('/[^a-z0-9_\-]/i', '', $prefix) ?: 'img';
     $filename = $safePrefix . '_' . bin2hex(random_bytes(8)) . '.' . $ext;
-    $targetPath = UPLOADS_DIR . DIRECTORY_SEPARATOR . $filename;
+    $targetPath = UPLOADS_DIR . DIRECTORY_SEPARATOR . $cat . DIRECTORY_SEPARATOR . $filename;
     if (@file_put_contents($targetPath, $binary, LOCK_EX) === false) {
         return '';
     }
-    return 'uploads/' . $filename;
+    return 'uploads/' . $cat . '/' . $filename;
+}
+
+function saveValidatedImageDataUrl(string $dataUrl, string $prefix = 'img', string $category = 'students'): string
+{
+    $trimmed = trim($dataUrl);
+    if ($trimmed === '') {
+        return '';
+    }
+    if (isSafeLocalUploadPath($trimmed)) {
+        return $trimmed;
+    }
+    if (!preg_match('/^data:image\/(png|jpeg|jpg|gif|webp);base64,([A-Za-z0-9+\/=]+)$/i', $trimmed, $matches)) {
+        return '';
+    }
+    $binary = base64_decode($matches[2], true);
+    if ($binary === false) {
+        return '';
+    }
+    return saveValidatedBinaryImage($binary, $category, $prefix);
 }
 
 function deleteLocalUploadIfUnused(string $path, array $db): void
 {
-    if (!preg_match('/^uploads\/([a-zA-Z0-9_\-]+\.(png|jpg|jpeg|gif|webp))$/i', $path, $m)) {
+    $trimmed = trim($path);
+    if (!preg_match('/^uploads\/(?:(students|coaches|judges|backgrounds)\/)?([a-zA-Z0-9_\-]+\.(png|jpg|jpeg|gif|webp))$/i', $trimmed, $m)) {
         return;
     }
     $encoded = json_encode($db, JSON_UNESCAPED_UNICODE);
-    if ($encoded !== false && strpos($encoded, $path) !== false) {
+    if ($encoded !== false && strpos($encoded, $trimmed) !== false) {
         return;
     }
-    $full = realpath(UPLOADS_DIR . DIRECTORY_SEPARATOR . basename($m[1]));
+    $subDir = !empty($m[1]) ? (strtolower($m[1]) . DIRECTORY_SEPARATOR) : '';
+    $full = realpath(UPLOADS_DIR . DIRECTORY_SEPARATOR . $subDir . basename($m[2]));
     $baseReal = realpath(UPLOADS_DIR);
     if ($full !== false && $baseReal !== false && strpos($full, $baseReal . DIRECTORY_SEPARATOR) === 0 && is_file($full)) {
         @unlink($full);
@@ -154,11 +175,82 @@ if ($method === 'GET' && ($action === 'bootstrap' || $action === '')) {
     jsonResponse(200, ['ok' => true, 'state' => $payload]);
 }
 
+if ($method === 'GET' && $action === 'export_backup') {
+    requireRoles(['admin']);
+    $payload = buildClientPayload($db, $_SESSION['auth']);
+    unset($payload['csrfToken']);
+    $payload['exportedAt'] = date('c');
+    @session_write_close();
+    header('Content-Disposition: attachment; filename="makhapuja_backup_' . date('Ymd_His') . '.json"');
+    http_response_code(200);
+    echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    exit;
+}
+
 if ($method !== 'POST') {
     jsonResponse(405, ['ok' => false, 'error' => 'Method not allowed']);
 }
 
 verifyCsrf();
+
+if ($action === 'upload_image') {
+    $role = currentRole();
+    if (!in_array($role, ['admin', 'school', 'judge'], true)) {
+        jsonResponse(403, ['ok' => false, 'error' => 'กรุณาเข้าสู่ระบบก่อนอัปโหลดรูปภาพ']);
+    }
+    $rawCategory = (string)($_POST['category'] ?? '');
+    $bodyFallback = [];
+    if ($rawCategory === '' && empty($_FILES['image'])) {
+        $bodyFallback = getJsonBody();
+        $rawCategory = (string)($bodyFallback['category'] ?? 'students');
+    }
+    $category = normalizeUploadCategory($rawCategory);
+    if ($category === 'backgrounds' && $role !== 'admin') {
+        jsonResponse(403, ['ok' => false, 'error' => 'เฉพาะผู้ดูแลระบบเท่านั้นที่อัปโหลดภาพพื้นหลังได้']);
+    }
+    if ($category === 'judges' && !in_array($role, ['admin', 'judge'], true)) {
+        jsonResponse(403, ['ok' => false, 'error' => 'ไม่มีสิทธิ์อัปโหลดภาพกรรมการ']);
+    }
+    if (($category === 'students' || $category === 'coaches') && !in_array($role, ['admin', 'school'], true)) {
+        jsonResponse(403, ['ok' => false, 'error' => 'ไม่มีสิทธิ์อัปโหลดภาพผู้เข้าแข่งขันหรือครูผู้ฝึกสอน']);
+    }
+
+    $prefixMap = ['students' => 'stu', 'coaches' => 'coach', 'judges' => 'jdg', 'backgrounds' => 'bg'];
+    $prefix = $prefixMap[$category] ?? 'img';
+
+    $savedPath = '';
+    if (!empty($_FILES['image']) && is_array($_FILES['image'])) {
+        $errCode = (int)($_FILES['image']['error'] ?? UPLOAD_ERR_NO_FILE);
+        if ($errCode !== UPLOAD_ERR_OK) {
+            jsonResponse(400, ['ok' => false, 'error' => 'การอัปโหลดไฟล์รูปภาพไม่สมบูรณ์']);
+        }
+        $tmpName = (string)($_FILES['image']['tmp_name'] ?? '');
+        $size = (int)($_FILES['image']['size'] ?? 0);
+        if ($tmpName === '' || !is_uploaded_file($tmpName) || $size <= 0 || $size > 6 * 1024 * 1024) {
+            jsonResponse(400, ['ok' => false, 'error' => 'ไฟล์รูปภาพไม่ถูกต้องหรือมีขนาดใหญ่เกิน 6 MB']);
+        }
+        $binary = @file_get_contents($tmpName);
+        if ($binary === false) {
+            jsonResponse(400, ['ok' => false, 'error' => 'ไม่สามารถอ่านไฟล์รูปภาพที่อัปโหลดได้']);
+        }
+        $savedPath = saveValidatedBinaryImage($binary, $category, $prefix);
+    } else {
+        $dataUrl = (string)($bodyFallback['dataUrl'] ?? '');
+        $savedPath = saveValidatedImageDataUrl($dataUrl, $prefix, $category);
+    }
+
+    if ($savedPath === '') {
+        jsonResponse(400, ['ok' => false, 'error' => 'รองรับเฉพาะไฟล์รูปภาพ PNG, JPG, GIF หรือ WebP (ขนาดไม่เกิน 6 MB)']);
+    }
+
+    jsonResponse(200, [
+        'ok' => true,
+        'url' => $savedPath,
+        'category' => $category,
+        'message' => 'อัปโหลดและจัดเก็บไฟล์รูปภาพลงบนเซิร์ฟเวอร์เรียบร้อยแล้ว',
+    ]);
+}
+
 $body = getJsonBody();
 
 switch ($action) {
@@ -369,7 +461,7 @@ switch ($action) {
             if ($stName === '') {
                 continue;
             }
-            $photo = saveValidatedImageDataUrl((string)($st['photoUrl'] ?? ''), 'stu');
+            $photo = saveValidatedImageDataUrl((string)($st['photoUrl'] ?? ''), 'stu', 'students');
             $students[] = ['name' => $stName, 'photoUrl' => $photo];
         }
         if (count($students) === 0 || count($students) > (int)$comp['teamSize']) {
@@ -383,7 +475,7 @@ switch ($action) {
             if ($cName === '') {
                 continue;
             }
-            $cPhoto = is_array($c) ? saveValidatedImageDataUrl((string)($c['photoUrl'] ?? ''), 'coach') : '';
+            $cPhoto = is_array($c) ? saveValidatedImageDataUrl((string)($c['photoUrl'] ?? ''), 'coach', 'coaches') : '';
             $coaches[] = ['name' => $cName, 'photoUrl' => $cPhoto];
         }
         if (count($coaches) === 0 || count($coaches) > 3) {
@@ -657,7 +749,7 @@ switch ($action) {
         $position = trim((string)($body['position'] ?? 'กรรมการตัดสิน')) ?: 'กรรมการตัดสิน';
         $compId = trim((string)($body['competitionId'] ?? 'comp-1'));
         $level = trim((string)($body['level'] ?? ''));
-        $photoUrl = saveValidatedImageDataUrl((string)($body['photoUrl'] ?? ''), 'jdg');
+        $photoUrl = saveValidatedImageDataUrl((string)($body['photoUrl'] ?? ''), 'jdg', 'judges');
 
         $comp = findCompetition($compId);
         if (!$comp || !in_array($level, $comp['levels'], true)) {
@@ -805,7 +897,7 @@ switch ($action) {
             deleteLocalUploadIfUnused($oldUrl, $db);
             jsonResponse(200, ['ok' => true, 'message' => 'ลบรูปภาพพื้นหลังเรียบร้อยแล้ว', 'state' => buildClientPayload($db, $_SESSION['auth'])]);
         }
-        $savedPath = saveValidatedImageDataUrl($dataUrl, 'bg_' . $key);
+        $savedPath = saveValidatedImageDataUrl($dataUrl, 'bg_' . $key, 'backgrounds');
         if ($savedPath === '') {
             jsonResponse(400, ['ok' => false, 'error' => 'ไฟล์รูปภาพไม่ถูกต้องหรือมีขนาดใหญ่เกินไป']);
         }

@@ -1,0 +1,26 @@
+[
+  {
+    "id": "sch-10112201",
+    "schoolCode": "10112201",
+    "passwordHash": "7a8dcd0055116d19ee757e5c0e56cae1:3084048ab9fd4923328f9ad666dd280ac182eaeaf238d241b8634784de6ecfe00dce0a5c554a50694f34abd73537edd0e0b5422aa79a4a28c653b63e0d4d923c",
+    "name": "โรงเรียนสุรินทร์ธรรมวิทยาคม",
+    "director": "นายสมชาย ใจดีมีธรรม",
+    "phone": "044-511-234"
+  },
+  {
+    "id": "sch-10112202",
+    "schoolCode": "10112202",
+    "passwordHash": "7a8dcd0055116d19ee757e5c0e56cae1:3084048ab9fd4923328f9ad666dd280ac182eaeaf238d241b8634784de6ecfe00dce0a5c554a50694f34abd73537edd0e0b5422aa79a4a28c653b63e0d4d923c",
+    "name": "โรงเรียนศรีณรงค์พุทธอุปถัมภ์",
+    "director": "นางสาววิภาดา รักสงบ",
+    "phone": "044-512-890"
+  },
+  {
+    "id": "sch-10112203",
+    "schoolCode": "10112203",
+    "passwordHash": "7a8dcd0055116d19ee757e5c0e56cae1:3084048ab9fd4923328f9ad666dd280ac182eaeaf238d241b8634784de6ecfe00dce0a5c554a50694f34abd73537edd0e0b5422aa79a4a28c653b63e0d4d923c",
+    "name": "โรงเรียนปราสาทปัญญาคุณ",
+    "director": "นายเกรียงไกร บุญญารักษ์",
+    "phone": "044-513-456"
+  }
+]

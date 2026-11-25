@@ -10,6 +10,21 @@ define('EVENT_DATE_TH', 'วันพุธที่ 17 กุมภาพัน
 define('EVENT_TITLE_TH', 'งานสัปดาห์ส่งเสริมวันสำคัญทางพระพุทธศาสนาวันมาฆบูชา ครั้งที่ 14 ประจำปี 2570');
 define('EVENT_VENUE_TH', 'โรงเรียนบ้านหนองบัว ตำบลหนองบัว อำเภอศีขรภูมิ จังหวัดสุรินทร์');
 
+define('UPLOAD_CATEGORIES', ['students', 'coaches', 'judges', 'backgrounds']);
+
+function getStoreFiles(): array
+{
+    return [
+        'system' => DATA_DIR . DIRECTORY_SEPARATOR . 'system.json',
+        'schools' => DATA_DIR . DIRECTORY_SEPARATOR . 'schools.json',
+        'judges' => DATA_DIR . DIRECTORY_SEPARATOR . 'judges.json',
+        'schedules' => DATA_DIR . DIRECTORY_SEPARATOR . 'schedules.json',
+        'registrations' => DATA_DIR . DIRECTORY_SEPARATOR . 'registrations.json',
+        'scores' => DATA_DIR . DIRECTORY_SEPARATOR . 'scores.json',
+        'criteria' => DATA_DIR . DIRECTORY_SEPARATOR . 'criteria.json',
+    ];
+}
+
 function ensureStorageDirs(): void
 {
     if (!is_dir(DATA_DIR)) {
@@ -17,6 +32,12 @@ function ensureStorageDirs(): void
     }
     if (!is_dir(UPLOADS_DIR)) {
         @mkdir(UPLOADS_DIR, 0755, true);
+    }
+    foreach (UPLOAD_CATEGORIES as $cat) {
+        $subDir = UPLOADS_DIR . DIRECTORY_SEPARATOR . $cat;
+        if (!is_dir($subDir)) {
+            @mkdir($subDir, 0755, true);
+        }
     }
     $dataHtaccess = DATA_DIR . DIRECTORY_SEPARATOR . '.htaccess';
     if (!file_exists($dataHtaccess)) {
@@ -506,35 +527,51 @@ function createInitialDb(): array
     ];
 }
 
-function loadDb(): array
+function readJsonFileLocked(string $filePath)
 {
-    ensureStorageDirs();
-    if (!file_exists(DB_FILE)) {
-        $initial = createInitialDb();
-        saveDb($initial);
-        return json_decode(json_encode($initial, JSON_UNESCAPED_UNICODE), true);
+    if (!file_exists($filePath)) {
+        return null;
     }
-
-    $fp = @fopen(DB_FILE, 'rb');
+    $fp = @fopen($filePath, 'rb');
     if (!$fp) {
-        return json_decode(json_encode(createInitialDb(), JSON_UNESCAPED_UNICODE), true);
+        return null;
     }
     flock($fp, LOCK_SH);
     $raw = stream_get_contents($fp);
     flock($fp, LOCK_UN);
     fclose($fp);
-
     $decoded = json_decode((string)$raw, true);
-    if (!is_array($decoded)) {
-        $initial = createInitialDb();
-        saveDb($initial);
-        return json_decode(json_encode($initial, JSON_UNESCAPED_UNICODE), true);
-    }
+    return is_array($decoded) ? $decoded : null;
+}
 
+function writeJsonFileAtomic(string $filePath, $data): bool
+{
+    $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    if ($json === false) {
+        return false;
+    }
+    $tmpFile = $filePath . '.' . bin2hex(random_bytes(6)) . '.tmp';
+    if (@file_put_contents($tmpFile, $json, LOCK_EX) === false) {
+        return false;
+    }
+    if (!@rename($tmpFile, $filePath)) {
+        @unlink($tmpFile);
+        return false;
+    }
+    return true;
+}
+
+function hydrateDbShape(array $decoded): array
+{
     $defaults = getDbDefaults();
     $decoded['schedules'] = array_merge($defaults['schedules'], is_array($decoded['schedules'] ?? null) ? $decoded['schedules'] : []);
     $decoded['menuPermissions'] = array_merge($defaults['menuPermissions'], is_array($decoded['menuPermissions'] ?? null) ? $decoded['menuPermissions'] : []);
     $decoded['backgrounds'] = array_merge($defaults['backgrounds'], is_array($decoded['backgrounds'] ?? null) ? $decoded['backgrounds'] : []);
+    if (!isset($decoded['registrationOpen'])) {
+        $decoded['registrationOpen'] = true;
+    } else {
+        $decoded['registrationOpen'] = (bool)$decoded['registrationOpen'];
+    }
     foreach (['schools', 'judges', 'registrations'] as $arrKey) {
         if (!isset($decoded[$arrKey]) || !is_array($decoded[$arrKey])) {
             $decoded[$arrKey] = $defaults[$arrKey];
@@ -555,6 +592,55 @@ function loadDb(): array
     return $decoded;
 }
 
+function loadDb(): array
+{
+    ensureStorageDirs();
+    $store = getStoreFiles();
+
+    // If modular store files exist, load from organized domain files
+    if (file_exists($store['system'])) {
+        $sys = readJsonFileLocked($store['system']) ?? [];
+        $schools = readJsonFileLocked($store['schools']);
+        $judges = readJsonFileLocked($store['judges']);
+        $schedules = readJsonFileLocked($store['schedules']);
+        $registrations = readJsonFileLocked($store['registrations']);
+        $scoreBundle = readJsonFileLocked($store['scores']) ?? [];
+        $criteria = readJsonFileLocked($store['criteria']);
+
+        $combined = [
+            'adminCredentials' => $sys['adminCredentials'] ?? null,
+            'registrationOpen' => $sys['registrationOpen'] ?? true,
+            'menuPermissions' => $sys['menuPermissions'] ?? [],
+            'backgrounds' => $sys['backgrounds'] ?? [],
+            'schools' => is_array($schools) ? $schools : [],
+            'judges' => is_array($judges) ? $judges : [],
+            'schedules' => is_array($schedules) ? $schedules : [],
+            'registrations' => is_array($registrations) ? $registrations : [],
+            'scores' => is_array($scoreBundle['scores'] ?? null) ? $scoreBundle['scores'] : [],
+            'scoreCriteriaDetails' => is_array($scoreBundle['scoreCriteriaDetails'] ?? null) ? $scoreBundle['scoreCriteriaDetails'] : [],
+            'evalMeta' => is_array($scoreBundle['evalMeta'] ?? null) ? $scoreBundle['evalMeta'] : [],
+            'absentRegs' => is_array($scoreBundle['absentRegs'] ?? null) ? $scoreBundle['absentRegs'] : [],
+            'customCriteriaByComp' => is_array($criteria) ? $criteria : [],
+        ];
+        return hydrateDbShape($combined);
+    }
+
+    // Migrate cleanly from legacy single db.json if present
+    if (file_exists(DB_FILE)) {
+        $legacy = readJsonFileLocked(DB_FILE);
+        if (is_array($legacy)) {
+            $hydrated = hydrateDbShape($legacy);
+            saveDb($hydrated);
+            return $hydrated;
+        }
+    }
+
+    // First run initialization
+    $initial = createInitialDb();
+    saveDb($initial);
+    return json_decode(json_encode($initial, JSON_UNESCAPED_UNICODE), true);
+}
+
 function normalizeJsonMaps(array $db): array
 {
     $mapKeys = ['schedules', 'menuPermissions', 'backgrounds', 'scores', 'scoreCriteriaDetails', 'evalMeta', 'absentRegs', 'customCriteriaByComp'];
@@ -570,19 +656,98 @@ function saveDb(array $db): bool
 {
     ensureStorageDirs();
     $normalized = normalizeJsonMaps($db);
-    $json = json_encode($normalized, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
-    if ($json === false) {
+    $store = getStoreFiles();
+    $asObj = static function ($v) {
+        return (is_array($v) && count($v) === 0) ? new stdClass() : $v;
+    };
+
+    $systemDoc = [
+        'adminCredentials' => $normalized['adminCredentials'] ?? [],
+        'registrationOpen' => (bool)($normalized['registrationOpen'] ?? true),
+        'menuPermissions' => $asObj($normalized['menuPermissions'] ?? []),
+        'backgrounds' => $asObj($normalized['backgrounds'] ?? []),
+    ];
+    $scoresDoc = [
+        'scores' => $asObj($normalized['scores'] ?? []),
+        'scoreCriteriaDetails' => $asObj($normalized['scoreCriteriaDetails'] ?? []),
+        'evalMeta' => $asObj($normalized['evalMeta'] ?? []),
+        'absentRegs' => $asObj($normalized['absentRegs'] ?? []),
+    ];
+
+    $ok = writeJsonFileAtomic($store['system'], $systemDoc)
+        && writeJsonFileAtomic($store['schools'], array_values((array)($normalized['schools'] ?? [])))
+        && writeJsonFileAtomic($store['judges'], array_values((array)($normalized['judges'] ?? [])))
+        && writeJsonFileAtomic($store['schedules'], $asObj($normalized['schedules'] ?? []))
+        && writeJsonFileAtomic($store['registrations'], array_values((array)($normalized['registrations'] ?? [])))
+        && writeJsonFileAtomic($store['scores'], $scoresDoc)
+        && writeJsonFileAtomic($store['criteria'], $asObj($normalized['customCriteriaByComp'] ?? []));
+
+    if (!$ok) {
         return false;
     }
-    $tmpFile = DB_FILE . '.' . bin2hex(random_bytes(6)) . '.tmp';
-    if (@file_put_contents($tmpFile, $json, LOCK_EX) === false) {
-        return false;
-    }
-    if (!@rename($tmpFile, DB_FILE)) {
-        @unlink($tmpFile);
-        return false;
-    }
+
+    // Also update legacy db.json snapshot for backward compatibility
+    @writeJsonFileAtomic(DB_FILE, $normalized);
     return true;
+}
+
+function getStorageStats(array $db): array
+{
+    $categories = [];
+    $totalFiles = 0;
+    $totalBytes = 0;
+    foreach (UPLOAD_CATEGORIES as $cat) {
+        $dir = UPLOADS_DIR . DIRECTORY_SEPARATOR . $cat;
+        $count = 0;
+        $bytes = 0;
+        if (is_dir($dir)) {
+            $items = @scandir($dir);
+            if (is_array($items)) {
+                foreach ($items as $item) {
+                    if ($item === '.' || $item === '..' || $item === '.htaccess') {
+                        continue;
+                    }
+                    $full = $dir . DIRECTORY_SEPARATOR . $item;
+                    if (is_file($full)) {
+                        $count++;
+                        $sz = (int)@filesize($full);
+                        $bytes += $sz;
+                    }
+                }
+            }
+        }
+        $categories[$cat] = ['files' => $count, 'bytes' => $bytes];
+        $totalFiles += $count;
+        $totalBytes += $bytes;
+    }
+
+    // Include any legacy root uploads
+    $rootItems = @scandir(UPLOADS_DIR);
+    if (is_array($rootItems)) {
+        foreach ($rootItems as $item) {
+            if ($item === '.' || $item === '..' || $item === '.htaccess' || in_array($item, UPLOAD_CATEGORIES, true)) {
+                continue;
+            }
+            $full = UPLOADS_DIR . DIRECTORY_SEPARATOR . $item;
+            if (is_file($full)) {
+                $totalFiles++;
+                $totalBytes += (int)@filesize($full);
+            }
+        }
+    }
+
+    return [
+        'totalUploadFiles' => $totalFiles,
+        'totalUploadBytes' => $totalBytes,
+        'categories' => $categories,
+        'collections' => [
+            'schools' => count($db['schools'] ?? []),
+            'judges' => count($db['judges'] ?? []),
+            'registrations' => count($db['registrations'] ?? []),
+            'schedules' => is_array($db['schedules'] ?? null) ? count($db['schedules']) : 0,
+            'scores' => is_array($db['scores'] ?? null) ? count($db['scores']) : 0,
+        ],
+    ];
 }
 
 function startAppSession(): void
@@ -730,5 +895,6 @@ function buildClientPayload(array $db, array $auth): array
         'evalMeta' => $asObj($db['evalMeta'] ?? []),
         'absentRegs' => $asObj($db['absentRegs'] ?? []),
         'customCriteriaByComp' => $asObj($db['customCriteriaByComp'] ?? []),
+        'storageStats' => $role === 'admin' ? getStorageStats($db) : null,
     ];
 }

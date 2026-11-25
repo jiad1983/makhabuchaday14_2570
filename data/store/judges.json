@@ -1,0 +1,52 @@
+[
+  {
+    "id": "jdg-1",
+    "username": "judge1",
+    "passwordHash": "7a8dcd0055116d19ee757e5c0e56cae1:3084048ab9fd4923328f9ad666dd280ac182eaeaf238d241b8634784de6ecfe00dce0a5c554a50694f34abd73537edd0e0b5422aa79a4a28c653b63e0d4d923c",
+    "name": "พระมหาสมปอง ปัญญาธโร",
+    "position": "ประธานกรรมการตัดสิน",
+    "competitionId": "comp-1",
+    "level": "ประถมศึกษาตอนปลาย (ป.4-ป.6)",
+    "photoUrl": ""
+  },
+  {
+    "id": "jdg-2",
+    "username": "judge2",
+    "passwordHash": "7a8dcd0055116d19ee757e5c0e56cae1:3084048ab9fd4923328f9ad666dd280ac182eaeaf238d241b8634784de6ecfe00dce0a5c554a50694f34abd73537edd0e0b5422aa79a4a28c653b63e0d4d923c",
+    "name": "ดร.กัญญาณี สุนทรธรรม",
+    "position": "กรรมการตัดสิน",
+    "competitionId": "comp-1",
+    "level": "ประถมศึกษาตอนปลาย (ป.4-ป.6)",
+    "photoUrl": ""
+  },
+  {
+    "id": "jdg-3",
+    "username": "judge3",
+    "passwordHash": "7a8dcd0055116d19ee757e5c0e56cae1:3084048ab9fd4923328f9ad666dd280ac182eaeaf238d241b8634784de6ecfe00dce0a5c554a50694f34abd73537edd0e0b5422aa79a4a28c653b63e0d4d923c",
+    "name": "อาจารย์ธนวัฒน์ ศรีสวัสดิ์",
+    "position": "กรรมการตัดสิน",
+    "competitionId": "comp-1",
+    "level": "ประถมศึกษาตอนปลาย (ป.4-ป.6)",
+    "photoUrl": ""
+  },
+  {
+    "id": "jdg-4",
+    "username": "judge4",
+    "passwordHash": "7a8dcd0055116d19ee757e5c0e56cae1:3084048ab9fd4923328f9ad666dd280ac182eaeaf238d241b8634784de6ecfe00dce0a5c554a50694f34abd73537edd0e0b5422aa79a4a28c653b63e0d4d923c",
+    "name": "นางสาวพิมพ์ชนก วรรณศิลป์",
+    "position": "กรรมการตัดสิน",
+    "competitionId": "comp-1",
+    "level": "ประถมศึกษาตอนปลาย (ป.4-ป.6)",
+    "photoUrl": ""
+  },
+  {
+    "id": "jdg-5",
+    "username": "judge5",
+    "passwordHash": "7a8dcd0055116d19ee757e5c0e56cae1:3084048ab9fd4923328f9ad666dd280ac182eaeaf238d241b8634784de6ecfe00dce0a5c554a50694f34abd73537edd0e0b5422aa79a4a28c653b63e0d4d923c",
+    "name": "ครูสุรศักดิ์ เสียงไพเราะ",
+    "position": "ประธานกรรมการตัดสิน",
+    "competitionId": "comp-3",
+    "level": "มัธยมศึกษาตอนต้น (ม.1-ม.3)",
+    "photoUrl": ""
+  }
+]

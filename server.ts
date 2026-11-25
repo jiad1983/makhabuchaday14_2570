@@ -4,6 +4,7 @@ import express, { NextFunction, Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
+import { createAppStoreRouter, UPLOAD_CATEGORIES } from './src/server/appStore';
 import { COMPETITIONS, getCompetitionById } from './src/shared/competitions';
 import type {
   ActivityLevelSummary,
@@ -361,6 +362,27 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '10mb' }));
 
+  // Safely serve categorized uploaded images from data/uploads/:category/:filename
+  app.get('/uploads/:category/:filename', (req: Request, res: Response) => {
+    const category = String(req.params.category || '').trim().toLowerCase();
+    if (!(UPLOAD_CATEGORIES as readonly string[]).includes(category)) {
+      res.status(404).end();
+      return;
+    }
+    const safeName = path.basename(String(req.params.filename || ''));
+    if (!safeName || !/^[a-zA-Z0-9_-]+\.(png|jpg|jpeg|gif|webp)$/.test(safeName)) {
+      res.status(404).end();
+      return;
+    }
+    const catDir = path.resolve(UPLOADS_DIR, category);
+    const resolved = path.resolve(catDir, safeName);
+    if (!resolved.startsWith(catDir + path.sep) || !fs.existsSync(resolved)) {
+      res.status(404).end();
+      return;
+    }
+    res.sendFile(resolved);
+  });
+
   // Safely serve uploaded images from data/uploads
   app.get('/uploads/:filename', (req: Request, res: Response) => {
     const safeName = path.basename(String(req.params.filename || ''));
@@ -375,6 +397,16 @@ async function startServer() {
     }
     res.sendFile(resolved);
   });
+
+  // Organized App Store & Real Image Upload API (/api/app/*)
+  app.use(
+    '/api/app',
+    createAppStoreRouter({
+      dataDir: DATA_DIR,
+      uploadsDir: UPLOADS_DIR,
+      sessionSecret: SESSION_SECRET,
+    })
+  );
 
   // Auth status
   app.get('/api/auth/status', (_req: Request, res: Response) => {

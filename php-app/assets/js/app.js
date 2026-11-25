@@ -129,6 +129,7 @@
     state.evalMeta = s.evalMeta || {};
     state.absentRegs = s.absentRegs || {};
     state.customCriteriaByComp = s.customCriteriaByComp || {};
+    state.storageStats = s.storageStats || null;
   }
 
   function compressImageFile(file, maxDim, quality) {
@@ -165,6 +166,44 @@
       reader.onerror = function () { reject(new Error('ไม่สามารถอ่านไฟล์รูปภาพได้')); };
       reader.readAsDataURL(file);
     });
+  }
+
+  function dataUrlToBlob(dataUrl) {
+    const parts = String(dataUrl || '').split(',');
+    if (parts.length !== 2) return null;
+    const mimeMatch = parts[0].match(/data:([^;]+);base64/i);
+    const mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+    const bin = atob(parts[1]);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i += 1) {
+      arr[i] = bin.charCodeAt(i);
+    }
+    return new Blob([arr], { type: mime });
+  }
+
+  async function uploadImageFile(file, category, maxDim, quality) {
+    const dataUrl = await compressImageFile(file, maxDim || 640, quality || 0.85);
+    if (!dataUrl) {
+      throw new Error('ไม่สามารถประมวลผลไฟล์รูปภาพได้ กรุณาเลือกไฟล์ PNG, JPG หรือ WebP');
+    }
+    const blob = dataUrlToBlob(dataUrl);
+    if (blob) {
+      const fd = new FormData();
+      fd.append('category', category || 'students');
+      fd.append('image', blob, (category || 'img') + '.jpg');
+      const res = await fetch('api.php?action=upload_image', {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': state.csrfToken },
+        body: fd,
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok || !data.url) {
+        throw new Error(data.error || 'อัปโหลดไฟล์รูปภาพไม่สำเร็จ');
+      }
+      return data.url;
+    }
+    const fallbackRes = await apiCall('upload_image', { category: category || 'students', dataUrl: dataUrl });
+    return fallbackRes.url;
   }
 
   function getComp(id) {
@@ -911,31 +950,39 @@
     const myRegs = state.registrations.filter(function (r) { return r.schoolId === targetSchoolId; });
 
     const studentSlotsHtml = f.students.map(function (st, idx) {
+      const thumb = safeImg(st.photoUrl);
       return '<div class="card-compact stack-sm" style="background:#f8fafc;">' +
         '<div class="row-between" style="gap:8px;">' +
           '<input type="text" class="input stu-name" data-idx="' + idx + '" value="' + esc(st.name) + '" placeholder="ชื่อ-นามสกุล ผู้เข้าแข่งขันคนที่ ' + (idx + 1) + '" required />' +
           (f.students.length > 1 ? '<button type="button" class="btn btn-rose btn-xs stu-del" data-idx="' + idx + '">ลบ</button>' : '') +
         '</div>' +
-        '<div class="row-between" style="font-size:12px;">' +
-          '<label style="cursor:pointer;color:#047857;font-weight:700;">📷 ' + (st.photoUrl ? 'เปลี่ยนรูปถ่ายนักเรียน' : 'อัปโหลดรูปถ่ายนักเรียน') +
-            '<input type="file" accept="image/*" class="hidden stu-photo" data-idx="' + idx + '" />' +
-          '</label>' +
-          (st.photoUrl ? '<button type="button" class="btn btn-rose btn-xs stu-photo-clear" data-idx="' + idx + '">ลบรูป</button>' : '') +
+        '<div class="row-between" style="font-size:12px;gap:8px;">' +
+          '<div style="display:flex;align-items:center;gap:8px;">' +
+            (thumb ? '<img src="' + thumb + '" alt="รูปนักเรียน" style="width:40px;height:40px;border-radius:8px;object-fit:cover;border:1px solid #cbd5e1;" />' : '') +
+            '<label style="cursor:pointer;color:#047857;font-weight:700;">📷 ' + (thumb ? 'เปลี่ยนรูปถ่ายนักเรียน' : 'อัปโหลดรูปถ่ายนักเรียน') +
+              '<input type="file" accept="image/*" class="hidden stu-photo" data-idx="' + idx + '" />' +
+            '</label>' +
+          '</div>' +
+          (thumb ? '<button type="button" class="btn btn-rose btn-xs stu-photo-clear" data-idx="' + idx + '">ลบรูป</button>' : '') +
         '</div>' +
       '</div>';
     }).join('');
 
     const coachSlotsHtml = f.coaches.map(function (c, idx) {
+      const cThumb = safeImg(c.photoUrl);
       return '<div class="card-compact stack-sm" style="background:#f8fafc;">' +
         '<div class="row-between" style="gap:8px;">' +
           '<input type="text" class="input coach-name" data-idx="' + idx + '" value="' + esc(c.name) + '" placeholder="ชื่อ-นามสกุล ครูผู้ฝึกสอนคนที่ ' + (idx + 1) + '" required />' +
           (f.coaches.length > 1 ? '<button type="button" class="btn btn-rose btn-xs coach-del" data-idx="' + idx + '">ลบ</button>' : '') +
         '</div>' +
-        '<div class="row-between" style="font-size:12px;">' +
-          '<label style="cursor:pointer;color:#047857;font-weight:700;">📷 ' + (c.photoUrl ? 'เปลี่ยนรูปถ่ายครู' : 'อัปโหลดรูปถ่ายครู') +
-            '<input type="file" accept="image/*" class="hidden coach-photo" data-idx="' + idx + '" />' +
-          '</label>' +
-          (c.photoUrl ? '<button type="button" class="btn btn-rose btn-xs coach-photo-clear" data-idx="' + idx + '">ลบรูป</button>' : '') +
+        '<div class="row-between" style="font-size:12px;gap:8px;">' +
+          '<div style="display:flex;align-items:center;gap:8px;">' +
+            (cThumb ? '<img src="' + cThumb + '" alt="รูปครู" style="width:40px;height:40px;border-radius:8px;object-fit:cover;border:1px solid #cbd5e1;" />' : '') +
+            '<label style="cursor:pointer;color:#047857;font-weight:700;">📷 ' + (cThumb ? 'เปลี่ยนรูปถ่ายครู' : 'อัปโหลดรูปถ่ายครู') +
+              '<input type="file" accept="image/*" class="hidden coach-photo" data-idx="' + idx + '" />' +
+            '</label>' +
+          '</div>' +
+          (cThumb ? '<button type="button" class="btn btn-rose btn-xs coach-photo-clear" data-idx="' + idx + '">ลบรูป</button>' : '') +
         '</div>' +
       '</div>';
     }).join('');
@@ -1038,8 +1085,14 @@
       inp.onchange = async function () {
         const file = inp.files && inp.files[0];
         if (!file) return;
-        f.students[Number(inp.getAttribute('data-idx'))].photoUrl = await compressImageFile(file);
-        renderAll();
+        try {
+          const uploadedUrl = await uploadImageFile(file, 'students', 600, 0.85);
+          f.students[Number(inp.getAttribute('data-idx'))].photoUrl = uploadedUrl;
+          showToast('อัปโหลดรูปถ่ายนักเรียนลงเซิร์ฟเวอร์เรียบร้อยแล้ว');
+          renderAll();
+        } catch (err) {
+          showToast(err.message, 'error');
+        }
       };
     });
     main.querySelectorAll('.stu-photo-clear').forEach(function (btn) {
@@ -1055,8 +1108,14 @@
       inp.onchange = async function () {
         const file = inp.files && inp.files[0];
         if (!file) return;
-        f.coaches[Number(inp.getAttribute('data-idx'))].photoUrl = await compressImageFile(file);
-        renderAll();
+        try {
+          const uploadedUrl = await uploadImageFile(file, 'coaches', 600, 0.85);
+          f.coaches[Number(inp.getAttribute('data-idx'))].photoUrl = uploadedUrl;
+          showToast('อัปโหลดรูปถ่ายครูผู้ฝึกสอนลงเซิร์ฟเวอร์เรียบร้อยแล้ว');
+          renderAll();
+        } catch (err) {
+          showToast(err.message, 'error');
+        }
       };
     });
     main.querySelectorAll('.coach-photo-clear').forEach(function (btn) {
@@ -1934,6 +1993,21 @@
             '<div><button type="submit" class="btn btn-dark">บันทึกบัญชีผู้ดูแลระบบ</button></div>' +
           '</form>' +
         '</div>' +
+
+        '<div class="card stack">' +
+          '<div class="row-between">' +
+            '<div><h3 style="margin:0;">💾 ระบบจัดเก็บข้อมูลและไฟล์ภาพบนเซิร์ฟเวอร์</h3><p style="margin:4px 0 0;font-size:13px;color:#64748b;">จัดเก็บแยกหมวดหมู่ใน data/*.json และ uploads/{students,coaches,judges,backgrounds}/</p></div>' +
+            '<a href="api.php?action=export_backup" class="btn btn-amber btn-sm" download>⬇ สำรองข้อมูลระบบ (.json)</a>' +
+          '</div>' +
+          (state.storageStats
+            ? '<div class="grid-4">' +
+                '<div class="kpi-card"><div style="font-size:12px;color:#64748b;font-weight:700;">ภาพนักเรียน (uploads/students)</div><div class="kpi-val">' + ((state.storageStats.categories && state.storageStats.categories.students && state.storageStats.categories.students.files) || 0) + ' ไฟล์</div></div>' +
+                '<div class="kpi-card"><div style="font-size:12px;color:#64748b;font-weight:700;">ภาพครูผู้ฝึกสอน (uploads/coaches)</div><div class="kpi-val">' + ((state.storageStats.categories && state.storageStats.categories.coaches && state.storageStats.categories.coaches.files) || 0) + ' ไฟล์</div></div>' +
+                '<div class="kpi-card"><div style="font-size:12px;color:#64748b;font-weight:700;">ภาพกรรมการ (uploads/judges)</div><div class="kpi-val">' + ((state.storageStats.categories && state.storageStats.categories.judges && state.storageStats.categories.judges.files) || 0) + ' ไฟล์</div></div>' +
+                '<div class="kpi-card"><div style="font-size:12px;color:#64748b;font-weight:700;">พื้นหลัง & แบนเนอร์</div><div class="kpi-val">' + ((state.storageStats.categories && state.storageStats.categories.backgrounds && state.storageStats.categories.backgrounds.files) || 0) + ' ไฟล์</div></div>' +
+              '</div>'
+            : '') +
+        '</div>' +
       '</div>';
 
     document.getElementById('btnToggleRegOpen').onclick = async function () {
@@ -1952,9 +2026,11 @@
       inp.onchange = async function () {
         const file = inp.files && inp.files[0];
         if (!file) return;
+        const bgKey = inp.getAttribute('data-key');
+        const maxDim = bgKey === 'bannerBgUrl' ? 1920 : 1600;
         try {
-          const dataUrl = await compressImageFile(file, 1600, 0.85);
-          const res = await apiCall('save_background', { key: inp.getAttribute('data-key'), dataUrl: dataUrl });
+          const uploadedUrl = await uploadImageFile(file, 'backgrounds', maxDim, 0.85);
+          const res = await apiCall('save_background', { key: bgKey, dataUrl: uploadedUrl });
           showToast(res.message); renderAll();
         } catch (err) { showToast(err.message, 'error'); }
       };
@@ -1999,8 +2075,13 @@
     document.getElementById('admJdgPhotoFile').onchange = async function (e) {
       const file = e.target.files && e.target.files[0];
       if (!file) return;
-      state.editingJudgePhotoDraft = await compressImageFile(file);
-      renderAll();
+      try {
+        state.editingJudgePhotoDraft = await uploadImageFile(file, 'judges', 600, 0.85);
+        showToast('อัปโหลดรูปถ่ายกรรมการลงเซิร์ฟเวอร์เรียบร้อยแล้ว');
+        renderAll();
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
     };
     if (document.getElementById('btnClearJdgPhoto')) {
       document.getElementById('btnClearJdgPhoto').onclick = function () { state.editingJudgePhotoDraft = ''; renderAll(); };

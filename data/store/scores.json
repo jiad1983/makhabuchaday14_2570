@@ -1,0 +1,28 @@
+{
+  "scores": {
+    "reg-1": {
+      "jdg-1": 92,
+      "jdg-2": 90,
+      "jdg-3": 89,
+      "jdg-4": 93
+    },
+    "reg-2": {
+      "jdg-1": 95,
+      "jdg-2": 94,
+      "jdg-3": 96,
+      "jdg-4": 95
+    }
+  },
+  "scoreCriteriaDetails": {},
+  "evalMeta": {
+    "comp-1__ประถมศึกษาตอนปลาย (ป.4-ป.6)": {
+      "status": "completed",
+      "approved": true
+    },
+    "comp-3__มัธยมศึกษาตอนต้น (ม.1-ม.3)": {
+      "status": "judging",
+      "approved": false
+    }
+  },
+  "absentRegs": {}
+}

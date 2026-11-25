@@ -1,0 +1,166 @@
+[
+  {
+    "id": "reg-1",
+    "schoolId": "sch-10112201",
+    "competitionId": "comp-1",
+    "level": "ประถมศึกษาตอนปลาย (ป.4-ป.6)",
+    "students": [
+      {
+        "name": "ด.ช.ปวริศร์ เจริญสุข",
+        "photoUrl": ""
+      }
+    ],
+    "coaches": [
+      {
+        "name": "นายอดิศร มีเมตตา",
+        "photoUrl": ""
+      }
+    ],
+    "qualifyingSong": "",
+    "finalSong": ""
+  },
+  {
+    "id": "reg-2",
+    "schoolId": "sch-10112202",
+    "competitionId": "comp-1",
+    "level": "ประถมศึกษาตอนปลาย (ป.4-ป.6)",
+    "students": [
+      {
+        "name": "ด.ญ.ณัฐนิชา งามสง่า",
+        "photoUrl": ""
+      }
+    ],
+    "coaches": [
+      {
+        "name": "นางนภาภรณ์ สอนดี",
+        "photoUrl": ""
+      }
+    ],
+    "qualifyingSong": "",
+    "finalSong": ""
+  },
+  {
+    "id": "reg-3",
+    "schoolId": "sch-10112203",
+    "competitionId": "comp-1",
+    "level": "ประถมศึกษาตอนปลาย (ป.4-ป.6)",
+    "students": [
+      {
+        "name": "ด.ช.กิตติภพ พัฒนธรรม",
+        "photoUrl": ""
+      }
+    ],
+    "coaches": [
+      {
+        "name": "นายวัฒนา แสงธรรม",
+        "photoUrl": ""
+      }
+    ],
+    "qualifyingSong": "",
+    "finalSong": ""
+  },
+  {
+    "id": "reg-4",
+    "schoolId": "sch-10112201",
+    "competitionId": "comp-3",
+    "level": "มัธยมศึกษาตอนต้น (ม.1-ม.3)",
+    "students": [
+      {
+        "name": "ด.ช.ธีรภัทร ขับขาน",
+        "photoUrl": ""
+      }
+    ],
+    "coaches": [
+      {
+        "name": "ครูสุเมธ ดนตรีไทย",
+        "photoUrl": ""
+      }
+    ],
+    "qualifyingSong": "วอนลมฝากข่าว (เพลงส่งเสริมคุณธรรม)",
+    "finalSong": "จดหมายจากแนวหน้า / น้ำตาแม่"
+  },
+  {
+    "id": "reg-5",
+    "schoolId": "sch-10112201",
+    "competitionId": "comp-7",
+    "level": "มัธยมศึกษาตอนปลาย (ม.4-ม.6)",
+    "students": [
+      {
+        "name": "นายภูมิพัฒน์ ใฝ่รู้",
+        "photoUrl": ""
+      },
+      {
+        "name": "นางสาวอารยา ปัญญาดี",
+        "photoUrl": ""
+      }
+    ],
+    "coaches": [
+      {
+        "name": "นางสมฤดี วิชาการ",
+        "photoUrl": ""
+      }
+    ],
+    "qualifyingSong": "",
+    "finalSong": ""
+  },
+  {
+    "id": "reg-6",
+    "schoolId": "sch-10112202",
+    "competitionId": "comp-10",
+    "level": "ไม่จำกัดระดับ",
+    "students": [
+      {
+        "name": "นักเรียนสมาชิกโต๊ะหมู่ที่ 1",
+        "photoUrl": ""
+      },
+      {
+        "name": "นักเรียนสมาชิกโต๊ะหมู่ที่ 2",
+        "photoUrl": ""
+      },
+      {
+        "name": "นักเรียนสมาชิกโต๊ะหมู่ที่ 3",
+        "photoUrl": ""
+      },
+      {
+        "name": "นักเรียนสมาชิกโต๊ะหมู่ที่ 4",
+        "photoUrl": ""
+      },
+      {
+        "name": "นักเรียนสมาชิกโต๊ะหมู่ที่ 5",
+        "photoUrl": ""
+      },
+      {
+        "name": "นักเรียนสมาชิกโต๊ะหมู่ที่ 6",
+        "photoUrl": ""
+      },
+      {
+        "name": "นักเรียนสมาชิกโต๊ะหมู่ที่ 7",
+        "photoUrl": ""
+      },
+      {
+        "name": "นักเรียนสมาชิกโต๊ะหมู่ที่ 8",
+        "photoUrl": ""
+      },
+      {
+        "name": "นักเรียนสมาชิกโต๊ะหมู่ที่ 9",
+        "photoUrl": ""
+      },
+      {
+        "name": "นักเรียนสมาชิกโต๊ะหมู่ที่ 10",
+        "photoUrl": ""
+      }
+    ],
+    "coaches": [
+      {
+        "name": "นายประเสริฐ ศิลป์ไทย",
+        "photoUrl": ""
+      },
+      {
+        "name": "นางสาวดวงใจ พุทธศิลป์",
+        "photoUrl": ""
+      }
+    ],
+    "qualifyingSong": "",
+    "finalSong": ""
+  }
+]
