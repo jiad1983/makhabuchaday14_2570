@@ -412,23 +412,25 @@
       const comp = getComp(reg.competitionId);
       const sched = state.schedules[reg.competitionId + '__' + reg.level] || { venue: 'กำหนดในวันงาน', timeRange: '08.30 น. เป็นต้นไป' };
       (reg.students || []).forEach(function (st, idx) {
-        const bgStyle = bgUrl
-          ? "background-image:url('" + bgUrl + "');background-size:cover;background-position:center;"
-          : 'background:linear-gradient(160deg,#fffbeb 0%,#fef3c7 48%,#fff7ed 100%);';
+        const bgFallback = 'background:linear-gradient(160deg,#fffbeb 0%,#fef3c7 48%,#fff7ed 100%);';
+        const bgImgHtml = bgUrl
+          ? '<img src="' + esc(bgUrl) + '" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;z-index:0;pointer-events:none;" />'
+          : '';
         const photo = safeImg(st.photoUrl);
         cards.push(
-          '<div class="card-item" style="width:105mm;height:148.5mm;' + bgStyle + 'border-radius:12px;padding:14px;display:flex;flex-direction:column;justify-content:space-between;overflow:hidden;">' +
-            '<div style="text-align:center;padding:6px 8px 8px;background:rgba(255,255,255,0.65);border-radius:8px;">' +
+          '<div class="card-item" style="width:105mm;height:148.5mm;' + bgFallback + 'border-radius:12px;padding:14px;display:flex;flex-direction:column;justify-content:space-between;position:relative;overflow:hidden;">' +
+            bgImgHtml +
+            '<div style="position:relative;z-index:1;text-align:center;padding:6px 8px 8px;background:rgba(255,255,255,0.65);border-radius:8px;">' +
               '<div style="font-size:13.5px;font-weight:700;color:#78350f;">บัตรประจำตัวผู้เข้าแข่งขัน</div>' +
               '<div style="font-size:10.5px;font-weight:700;color:#b45309;">งานส่งเสริมวันมาฆบูชา ครั้งที่ ๑๔ พ.ศ. ๒๕๗๐</div>' +
               '<div style="font-size:9.5px;color:#92400e;">' + esc(state.eventMeta.dateTh || '') + '</div>' +
             '</div>' +
-            '<div style="display:flex;justify-content:center;margin:4px 0;">' +
+            '<div style="position:relative;z-index:1;display:flex;justify-content:center;margin:4px 0;">' +
               '<div style="width:44mm;height:56mm;border-radius:10px;border:2px solid rgba(255,255,255,0.92);box-shadow:0 2px 8px rgba(15,23,42,0.12);background:rgba(255,255,255,0.75);display:flex;align-items:center;justify-content:center;overflow:hidden;">' +
-                (photo ? '<img src="' + photo + '" style="width:100%;height:100%;object-fit:cover;object-position:center top;" />' : '<span style="font-size:11px;color:#94a3b8;text-align:center;">รูปภาพนักเรียน<br/>(คนที่ ' + (idx + 1) + ')</span>') +
+                (photo ? '<img src="' + esc(photo) + '" style="width:100%;height:100%;object-fit:cover;object-position:center top;" />' : '<span style="font-size:11px;color:#94a3b8;text-align:center;">รูปภาพนักเรียน<br/>(คนที่ ' + (idx + 1) + ')</span>') +
               '</div>' +
             '</div>' +
-            '<div style="background:rgba(255,255,255,0.75);border-radius:10px;padding:8px 10px;font-size:11px;line-height:1.45;">' +
+            '<div style="position:relative;z-index:1;background:rgba(255,255,255,0.75);border-radius:10px;padding:8px 10px;font-size:11px;line-height:1.45;">' +
               '<div><strong>ชื่อ-สกุล:</strong> ' + esc(st.name) + '</div>' +
               '<div><strong>โรงเรียน:</strong> ' + esc(sch ? sch.name : '-') + '</div>' +
               '<div><strong>กิจกรรม:</strong> ' + esc(comp ? comp.name : '-') + '</div>' +
@@ -436,7 +438,7 @@
               '<div><strong>สถานที่:</strong> ' + esc(sched.venue) + '</div>' +
               '<div><strong>เวลา:</strong> ' + esc(sched.timeRange) + '</div>' +
             '</div>' +
-            '<div style="text-align:center;font-size:9.5px;font-weight:600;color:#78350f;background:rgba(255,255,255,0.65);padding:4px;border-radius:6px;">กรุณาติดบัตรนี้ตลอดการแข่งขัน</div>' +
+            '<div style="position:relative;z-index:1;text-align:center;font-size:9.5px;font-weight:600;color:#78350f;background:rgba(255,255,255,0.65);padding:4px;border-radius:6px;">กรุณาติดบัตรนี้ตลอดการแข่งขัน</div>' +
           '</div>'
         );
       });
@@ -465,22 +467,24 @@
       (reg.coaches || []).forEach(function (c, idx) {
         const cName = typeof c === 'string' ? c : (c.name || '');
         const cPhoto = safeImg(typeof c === 'string' ? '' : (c.photoUrl || ''));
-        const bgStyle = bgUrl
-          ? "background-image:url('" + bgUrl + "');background-size:cover;background-position:center;"
-          : 'background:linear-gradient(160deg,#ecfdf5 0%,#d1fae5 48%,#f0fdfa 100%);';
+        const bgFallback = 'background:linear-gradient(160deg,#ecfdf5 0%,#d1fae5 48%,#f0fdfa 100%);';
+        const bgImgHtml = bgUrl
+          ? '<img src="' + esc(bgUrl) + '" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;z-index:0;pointer-events:none;" />'
+          : '';
         cards.push(
-          '<div class="card-item" style="width:105mm;height:148.5mm;' + bgStyle + 'border-radius:12px;padding:14px;display:flex;flex-direction:column;justify-content:space-between;overflow:hidden;">' +
-            '<div style="text-align:center;padding:6px 8px 8px;background:rgba(255,255,255,0.65);border-radius:8px;">' +
+          '<div class="card-item" style="width:105mm;height:148.5mm;' + bgFallback + 'border-radius:12px;padding:14px;display:flex;flex-direction:column;justify-content:space-between;position:relative;overflow:hidden;">' +
+            bgImgHtml +
+            '<div style="position:relative;z-index:1;text-align:center;padding:6px 8px 8px;background:rgba(255,255,255,0.65);border-radius:8px;">' +
               '<div style="font-size:13.5px;font-weight:700;color:#064e3b;">บัตรประจำตัวครูผู้ฝึกสอน</div>' +
               '<div style="font-size:10.5px;font-weight:700;color:#047857;">งานส่งเสริมวันมาฆบูชา ครั้งที่ ๑๔ พ.ศ. ๒๕๗๐</div>' +
               '<div style="font-size:9.5px;color:#059669;">' + esc(state.eventMeta.dateTh || '') + '</div>' +
             '</div>' +
-            '<div style="display:flex;justify-content:center;margin:4px 0;">' +
+            '<div style="position:relative;z-index:1;display:flex;justify-content:center;margin:4px 0;">' +
               '<div style="width:42mm;height:52mm;border-radius:10px;border:2px solid rgba(255,255,255,0.92);box-shadow:0 2px 8px rgba(15,23,42,0.12);background:rgba(255,255,255,0.75);display:flex;align-items:center;justify-content:center;overflow:hidden;">' +
-                (cPhoto ? '<img src="' + cPhoto + '" style="width:100%;height:100%;object-fit:cover;object-position:center top;" />' : '<span style="font-size:11px;color:#64748b;text-align:center;">รูปภาพครูผู้ฝึกสอน<br/>(คนที่ ' + (idx + 1) + ')</span>') +
+                (cPhoto ? '<img src="' + esc(cPhoto) + '" style="width:100%;height:100%;object-fit:cover;object-position:center top;" />' : '<span style="font-size:11px;color:#64748b;text-align:center;">รูปภาพครูผู้ฝึกสอน<br/>(คนที่ ' + (idx + 1) + ')</span>') +
               '</div>' +
             '</div>' +
-            '<div style="background:rgba(255,255,255,0.75);border-radius:10px;padding:8px 10px;font-size:10.5px;line-height:1.4;">' +
+            '<div style="position:relative;z-index:1;background:rgba(255,255,255,0.75);border-radius:10px;padding:8px 10px;font-size:10.5px;line-height:1.4;">' +
               '<div><strong>ครูผู้ฝึกสอน:</strong> ' + esc(cName) + '</div>' +
               '<div><strong>โรงเรียน:</strong> ' + esc(sch ? sch.name : '-') + '</div>' +
               '<div><strong>ผู้แข่งขัน:</strong> ' + esc(stuList) + '</div>' +
@@ -489,7 +493,7 @@
               '<div><strong>สถานที่:</strong> ' + esc(sched.venue) + '</div>' +
               '<div><strong>เวลา:</strong> ' + esc(sched.timeRange) + '</div>' +
             '</div>' +
-            '<div style="text-align:center;font-size:9.5px;font-weight:700;color:#065f46;background:rgba(255,255,255,0.65);padding:4px;border-radius:6px;">ครูผู้ฝึกสอน</div>' +
+            '<div style="position:relative;z-index:1;text-align:center;font-size:9.5px;font-weight:700;color:#065f46;background:rgba(255,255,255,0.65);padding:4px;border-radius:6px;">ครูผู้ฝึกสอน</div>' +
           '</div>'
         );
       });
@@ -507,23 +511,25 @@
     const cards = targetJudges.map(function (jdg) {
       const comp = getComp(jdg.competitionId);
       const sched = state.schedules[jdg.competitionId + '__' + jdg.level] || { venue: 'กำหนดในวันงาน', timeRange: '08.30 น. เป็นต้นไป' };
-      const bgStyle = bgUrl
-        ? "background-image:url('" + bgUrl + "');background-size:cover;background-position:center;"
-        : 'background:linear-gradient(160deg,#eff6ff 0%,#dbeafe 50%,#f0fdf4 100%);';
+      const bgFallback = 'background:linear-gradient(160deg,#eff6ff 0%,#dbeafe 50%,#f0fdf4 100%);';
+      const bgImgHtml = bgUrl
+        ? '<img src="' + esc(bgUrl) + '" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;z-index:0;pointer-events:none;" />'
+        : '';
       const photo = safeImg(jdg.photoUrl);
       return (
-        '<div class="card-item" style="width:105mm;height:148.5mm;' + bgStyle + 'border-radius:12px;padding:14px;display:flex;flex-direction:column;justify-content:space-between;overflow:hidden;">' +
-          '<div style="text-align:center;padding:6px 8px 8px;background:rgba(255,255,255,0.65);border-radius:8px;">' +
+        '<div class="card-item" style="width:105mm;height:148.5mm;' + bgFallback + 'border-radius:12px;padding:14px;display:flex;flex-direction:column;justify-content:space-between;position:relative;overflow:hidden;">' +
+          bgImgHtml +
+          '<div style="position:relative;z-index:1;text-align:center;padding:6px 8px 8px;background:rgba(255,255,255,0.65);border-radius:8px;">' +
             '<div style="font-size:13.5px;font-weight:700;color:#0c4a6e;">บัตรประจำตัวกรรมการตัดสิน</div>' +
             '<div style="font-size:10.5px;font-weight:700;color:#0369a1;">งานส่งเสริมวันมาฆบูชา ครั้งที่ ๑๔ พ.ศ. ๒๕๗๐</div>' +
             '<div style="font-size:9.5px;color:#0284c7;">' + esc(state.eventMeta.dateTh || '') + '</div>' +
           '</div>' +
-          '<div style="display:flex;justify-content:center;margin:4px 0;">' +
+          '<div style="position:relative;z-index:1;display:flex;justify-content:center;margin:4px 0;">' +
             '<div style="width:40mm;height:50mm;border-radius:10px;border:2px solid rgba(255,255,255,0.92);box-shadow:0 2px 8px rgba(15,23,42,0.12);background:rgba(255,255,255,0.75);display:flex;align-items:center;justify-content:center;overflow:hidden;">' +
-              (photo ? '<img src="' + photo + '" style="width:100%;height:100%;object-fit:cover;object-position:center top;" />' : '<span style="font-size:11px;color:#64748b;text-align:center;">รูปภาพกรรมการ</span>') +
+              (photo ? '<img src="' + esc(photo) + '" style="width:100%;height:100%;object-fit:cover;object-position:center top;" />' : '<span style="font-size:11px;color:#64748b;text-align:center;">รูปภาพกรรมการ</span>') +
             '</div>' +
           '</div>' +
-          '<div style="background:rgba(255,255,255,0.75);border-radius:10px;padding:8px 10px;font-size:10.5px;line-height:1.38;">' +
+          '<div style="position:relative;z-index:1;background:rgba(255,255,255,0.75);border-radius:10px;padding:8px 10px;font-size:10.5px;line-height:1.38;">' +
             '<div><strong>ชื่อ-สกุล:</strong> ' + esc(jdg.name) + '</div>' +
             '<div><strong>ตำแหน่ง:</strong> ' + esc(jdg.position) + '</div>' +
             '<div><strong>กิจกรรมที่ตัดสิน:</strong> ' + esc(comp ? comp.name : '-') + '</div>' +
@@ -532,7 +538,7 @@
             '<div><strong>เวลา:</strong> ' + esc(sched.timeRange) + '</div>' +
             '<div style="margin-top:4px;padding-top:4px;color:#0c4a6e;"><strong>ชื่อผู้ใช้:</strong> ' + esc(jdg.username || '-') + '</div>' +
           '</div>' +
-          '<div style="text-align:center;font-size:9.5px;font-weight:700;color:#0369a1;background:rgba(255,255,255,0.65);padding:4px;border-radius:6px;">คณะกรรมการตัดสินการแข่งขัน</div>' +
+          '<div style="position:relative;z-index:1;text-align:center;font-size:9.5px;font-weight:700;color:#0369a1;background:rgba(255,255,255,0.65);padding:4px;border-radius:6px;">คณะกรรมการตัดสินการแข่งขัน</div>' +
         '</div>'
       );
     });
@@ -547,16 +553,18 @@
     }
     const bgUrl = safeImg(state.backgrounds.certBgUrl);
     const pagesHtml = certsList.map(function (cert) {
-      const bgStyle = bgUrl
-        ? "background-image:url('" + bgUrl + "');background-size:cover;background-position:center;"
-        : 'background:linear-gradient(135deg,#fffdf7 0%,#fef9c3 35%,#fffbeb 70%,#fef3c7 100%);';
+      const bgFallback = 'background:linear-gradient(135deg,#fffdf7 0%,#fef9c3 35%,#fffbeb 70%,#fef3c7 100%);';
+      const bgImgHtml = bgUrl
+        ? '<img src="' + esc(bgUrl) + '" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;z-index:0;pointer-events:none;" />'
+        : '';
       const line3 = cert.line3Activity || '';
       const len = line3.trim().length;
       const line3Pt = cert.fitSingleLine && len > 48 ? Math.max(9.5, Number((13.5 - (len - 48) * 0.08).toFixed(1))) : 13.5;
       return (
-        '<div class="page-break" style="width:297mm;height:210mm;' + bgStyle + 'padding:16mm;position:relative;display:flex;justify-content:center;">' +
-          (cert.certNumber ? '<div style="position:absolute;top:4cm;right:1cm;font-size:10pt;font-weight:600;color:#0f172a;text-align:right;">' + esc(cert.certNumber) + '</div>' : '') +
-          '<div style="position:absolute;top:7.3cm;left:0;right:0;width:100%;padding:0 36px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;">' +
+        '<div class="page-break" style="width:297mm;height:210mm;' + bgFallback + 'padding:16mm;position:relative;overflow:hidden;display:flex;justify-content:center;">' +
+          bgImgHtml +
+          (cert.certNumber ? '<div style="position:absolute;top:4cm;right:1cm;z-index:1;font-size:10pt;font-weight:600;color:#0f172a;text-align:right;">' + esc(cert.certNumber) + '</div>' : '') +
+          '<div style="position:absolute;top:7.3cm;left:0;right:0;width:100%;z-index:1;padding:0 36px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;">' +
             '<div style="font-size:19pt;font-weight:700;color:#0f172a;line-height:1.4;">' + esc(cert.line1Name) + '</div>' +
             '<div style="font-size:14pt;font-weight:700;color:#0f172a;line-height:1.4;">' + esc(cert.line2Position) + '</div>' +
             '<div style="' + (cert.fitSingleLine ? 'font-size:' + line3Pt + 'pt;white-space:nowrap;max-width:100%;' : 'font-size:13.5pt;max-width:820px;') + 'font-weight:600;color:#0f172a;line-height:1.5;">' + esc(line3) + '</div>' +
@@ -1480,11 +1488,15 @@
     const targets = isAdmin ? state.judges : (isJudge ? state.judges.filter(function (j) { return j.id === state.authSession.judgeId; }) : []);
     const certs = targets.map(function (jdg, idx) {
       const comp = getComp(jdg.competitionId);
+      const posText = jdg.position || 'กรรมการตัดสิน';
+      const actText = comp ? comp.name : '';
+      const isUnl = jdg.competitionId === 'comp-10' || jdg.level === 'ไม่จำกัดระดับ';
+      const lvlText = !isUnl && jdg.level ? 'ระดับ' + jdg.level : '';
       return {
-        certNumber: P.formatCertNumber('กก', idx + 1),
+        certNumber: P.formatCertNumber('กต', idx + 1),
         line1Name: jdg.name,
-        line2Position: jdg.position || 'กรรมการตัดสิน',
-        line3Activity: 'เป็นกรรมการตัดสินกิจกรรม' + (comp ? comp.name : '') + ' ระดับ ' + (jdg.level || ''),
+        line2Position: (actText ? ('เป็น' + posText + '  การแข่งขัน' + actText) : ('เป็น' + posText)).trim(),
+        line3Activity: lvlText,
         fitSingleLine: true,
       };
     });

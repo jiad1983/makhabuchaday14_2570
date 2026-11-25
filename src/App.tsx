@@ -301,13 +301,42 @@ function escapeHtml(value: unknown): string {
     .replace(/'/g, '&#39;');
 }
 
+function getAppBasePath(): string {
+  if (typeof window === 'undefined' || !window.location) return '/';
+  const path = window.location.pathname || '/';
+  if (path.endsWith('/')) return path;
+  if (path.endsWith('/index.html')) return path.slice(0, -'index.html'.length);
+  return '/';
+}
+
+function getAppBaseHref(): string {
+  if (typeof window === 'undefined' || !window.location) return '/';
+  try {
+    return new URL(getAppBasePath(), window.location.origin).href;
+  } catch {
+    return '/';
+  }
+}
+
 function safeImageUrl(value: unknown): string {
   const str = String(value ?? '').trim();
   if (!str) return '';
   if (/^data:image\/(png|jpeg|jpg|gif|webp|svg\+xml)(?:;charset=[^;,]+)?;base64,[A-Za-z0-9+/=]+$/i.test(str)) {
     return str;
   }
-  if (/^(https?:\/\/|\/)/i.test(str) && !/["'<>`\\]/.test(str)) {
+  if (/["'<>`\\]/.test(str) || /^javascript:/i.test(str)) {
+    return '';
+  }
+  const basePath = getAppBasePath();
+  const normalizedBase = basePath.endsWith('/') ? basePath : `${basePath}/`;
+  if (/^(?:\.\/)?uploads\//i.test(str)) {
+    const cleanRel = str.replace(/^\.\//, '');
+    return `${normalizedBase}${cleanRel}`;
+  }
+  if (/^\/uploads\//i.test(str)) {
+    return `${normalizedBase}${str.slice(1)}`;
+  }
+  if (/^(https?:\/\/|\/)/i.test(str)) {
     return str;
   }
   return '';
@@ -999,12 +1028,14 @@ function buildPrintableHtmlDoc(
   includeToolbar = true
 ): string {
   const safeTitle = escapeHtml(title);
+  const baseHref = escapeHtml(getAppBaseHref());
   const thaiBodyHtml = convertHtmlTextToThaiDigits(bodyHtml);
   return `
       <!DOCTYPE html>
       <html lang="th">
       <head>
         <meta charset="UTF-8" />
+        <base href="${baseHref}" />
         <title>${safeTitle}</title>
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1544,27 +1575,93 @@ export default function App() {
         await document.fonts.ready;
       }
 
+      const dataUriCache = new Map<string, Promise<string>>();
+      const toDataUri = (url: string): Promise<string> => {
+        if (!url || url.startsWith('data:')) return Promise.resolve(url);
+        let absUrl = url;
+        try {
+          absUrl = new URL(url, getAppBaseHref()).href;
+        } catch {
+          absUrl = url;
+        }
+        const existing = dataUriCache.get(absUrl);
+        if (existing) return existing;
+        const job = (async () => {
+          try {
+            const sameOrigin = absUrl.startsWith(window.location.origin);
+            const resp = await fetch(absUrl, {
+              credentials: sameOrigin ? 'include' : 'omit',
+              mode: sameOrigin ? 'same-origin' : 'cors'
+            });
+            if (!resp.ok) return url;
+            const blob = await resp.blob();
+            return await new Promise<string>((resolve) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : url);
+              reader.onerror = () => resolve(url);
+              reader.readAsDataURL(blob);
+            });
+          } catch {
+            return url;
+          }
+        })();
+        dataUriCache.set(absUrl, job);
+        return job;
+      };
+
       const imgs = Array.from(wrap.querySelectorAll('img'));
-      if (imgs.length > 0) {
+      const bgNodes = Array.from(wrap.querySelectorAll<HTMLElement>('[style*="background-image"]'));
+
+      await Promise.all([
+        ...imgs.map(async (img) => {
+          const srcAttr = img.getAttribute('src') || '';
+          if (srcAttr && !srcAttr.startsWith('data:')) {
+            const inlined = await toDataUri(srcAttr);
+            if (inlined && inlined !== srcAttr) {
+              img.src = inlined;
+            }
+          }
+        }),
+        ...bgNodes.map(async (el) => {
+          const bg = el.style.backgroundImage || '';
+          const match = bg.match(/url\((['"]?)([^'")]+)\1\)/i);
+          if (match && match[2] && !match[2].startsWith('data:')) {
+            const inlined = await toDataUri(match[2]);
+            if (inlined && inlined !== match[2]) {
+              el.style.backgroundImage = `url("${inlined}")`;
+            }
+          }
+        })
+      ]);
+
+      const refreshedImgs = Array.from(wrap.querySelectorAll('img'));
+      if (refreshedImgs.length > 0) {
         await Promise.race([
           Promise.all(
-            imgs.map(
+            refreshedImgs.map(
               (img) =>
                 new Promise<void>((resolve) => {
-                  if (img.complete) {
+                  const finish = () => {
                     if (typeof img.decode === 'function') {
                       img.decode().catch(() => {}).finally(resolve);
                     } else {
                       resolve();
                     }
+                  };
+                  if (img.complete && img.naturalWidth > 0) {
+                    finish();
                     return;
                   }
-                  img.onload = () => resolve();
+                  if (img.complete && img.naturalWidth === 0) {
+                    resolve();
+                    return;
+                  }
+                  img.onload = finish;
                   img.onerror = () => resolve();
                 })
             )
           ),
-          new Promise<void>((resolve) => setTimeout(resolve, 3000))
+          new Promise<void>((resolve) => setTimeout(resolve, 8000))
         ]);
       }
 
@@ -1969,16 +2066,9 @@ export default function App() {
 
   const getAppApiUrl = (endpoint: string): string => {
     const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-    if (typeof window !== 'undefined' && window.location) {
-      const path = window.location.pathname || '/';
-      const basePath = path.endsWith('/')
-        ? path
-        : path.endsWith('/index.html')
-        ? path.slice(0, -'index.html'.length)
-        : '/';
-      return `${basePath}api/app${cleanEndpoint}`;
-    }
-    return `/api/app${cleanEndpoint}`;
+    const basePath = getAppBasePath();
+    const normalizedBase = basePath.endsWith('/') ? basePath : `${basePath}/`;
+    return `${normalizedBase}api/app${cleanEndpoint}`;
   };
 
   const appApiCall = async <T = Record<string, any>>(
@@ -2793,30 +2883,32 @@ export default function App() {
       };
 
       reg.students.forEach((st, idx) => {
-        const bgStyle = safeBgUrl
-          ? `background-image: url('${safeBgUrl}'); background-size: cover; background-position: center;`
-          : `background: linear-gradient(160deg, #fffbeb 0%, #fef3c7 48%, #fff7ed 100%);`;
+        const bgFallback = `background: linear-gradient(160deg, #fffbeb 0%, #fef3c7 48%, #fff7ed 100%);`;
+        const bgImgHtml = safeBgUrl
+          ? `<img src="${escapeHtml(safeBgUrl)}" alt="" style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center; z-index: 0; pointer-events: none;" />`
+          : '';
         const safePhoto = safeImageUrl(st.photoUrl);
 
         cardsHtml.push(`
-          <div class="card-item" style="width: 105mm; height: 148.5mm; ${bgStyle} border: none; border-radius: 12px; padding: 14px; display: flex; flex-direction: column; justify-content: space-between; position: relative; overflow: hidden;">
-            <div style="text-align: center; padding-bottom: 8px; background: rgba(255,255,255,0.6); border-radius: 8px; padding-top: 6px;">
+          <div class="card-item" style="width: 105mm; height: 148.5mm; ${bgFallback} border: none; border-radius: 12px; padding: 14px; display: flex; flex-direction: column; justify-content: space-between; position: relative; overflow: hidden;">
+            ${bgImgHtml}
+            <div style="position: relative; z-index: 1; text-align: center; padding-bottom: 8px; background: rgba(255,255,255,0.6); border-radius: 8px; padding-top: 6px;">
               <div style="font-size: 13.5px; font-weight: 700; color: #78350f;">บัตรประจำตัวผู้เข้าแข่งขัน</div>
               <div style="font-size: 10.5px; font-weight: 700; color: #b45309;">งานส่งเสริมวันมาฆบูชา ครั้งที่ ๑๔ พ.ศ. ๒๕๗๐</div>
               <div style="font-size: 9.5px; color: #92400e;">${escapeHtml(EVENT_DATE_TH)}</div>
             </div>
 
-            <div style="display: flex; justify-content: center; margin: 4px 0;">
+            <div style="position: relative; z-index: 1; display: flex; justify-content: center; margin: 4px 0;">
               <div style="width: 44mm; height: 56mm; border-radius: 10px; border: 2px solid rgba(255,255,255,0.92); box-shadow: 0 2px 8px rgba(15,23,42,0.12); background: rgba(255,255,255,0.75); display: flex; align-items: center; justify-content: center; overflow: hidden;">
                 ${
                   safePhoto
-                    ? `<img src="${safePhoto}" style="width: 100%; height: 100%; object-fit: cover; object-position: center top;" />`
+                    ? `<img src="${escapeHtml(safePhoto)}" style="width: 100%; height: 100%; object-fit: cover; object-position: center top;" />`
                     : `<span style="font-size: 11px; color: #94a3b8; text-align: center; padding: 6px;">รูปภาพนักเรียน<br/>(คนที่ ${idx + 1})</span>`
                 }
               </div>
             </div>
 
-            <div style="background: rgba(255,255,255,0.72); border-radius: 10px; padding: 8px 10px; font-size: 11px; line-height: 1.45;">
+            <div style="position: relative; z-index: 1; background: rgba(255,255,255,0.72); border-radius: 10px; padding: 8px 10px; font-size: 11px; line-height: 1.45;">
               <div><strong>ชื่อ-สกุล:</strong> ${escapeHtml(st.name)}</div>
               <div><strong>โรงเรียน:</strong> ${escapeHtml(school ? school.name : '-')}</div>
               <div><strong>กิจกรรม:</strong> ${escapeHtml(comp ? comp.name : '-')}</div>
@@ -2825,7 +2917,7 @@ export default function App() {
               <div><strong>เวลา:</strong> ${escapeHtml(sched.timeRange)}</div>
             </div>
 
-            <div style="text-align: center; font-size: 9.5px; font-weight: 600; color: #78350f; background: rgba(255,255,255,0.6); padding: 4px; border-radius: 6px;">
+            <div style="position: relative; z-index: 1; text-align: center; font-size: 9.5px; font-weight: 600; color: #78350f; background: rgba(255,255,255,0.6); padding: 4px; border-radius: 6px;">
               กรุณาติดบัตรนี้ตลอดการแข่งขัน
             </div>
           </div>
@@ -2877,29 +2969,31 @@ export default function App() {
       reg.coaches.forEach((coachItem, cIdx) => {
         const coachName = typeof coachItem === 'string' ? coachItem : coachItem.name;
         const coachPhoto = safeImageUrl(typeof coachItem === 'string' ? '' : coachItem.photoUrl || '');
-        const bgStyle = safeBgUrl
-          ? `background-image: url('${safeBgUrl}'); background-size: cover; background-position: center;`
-          : `background: linear-gradient(160deg, #ecfdf5 0%, #d1fae5 48%, #f0fdfa 100%);`;
+        const bgFallback = `background: linear-gradient(160deg, #ecfdf5 0%, #d1fae5 48%, #f0fdfa 100%);`;
+        const bgImgHtml = safeBgUrl
+          ? `<img src="${escapeHtml(safeBgUrl)}" alt="" style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center; z-index: 0; pointer-events: none;" />`
+          : '';
 
         cardsHtml.push(`
-          <div class="card-item" style="width: 105mm; height: 148.5mm; ${bgStyle} border: none; border-radius: 12px; padding: 14px; display: flex; flex-direction: column; justify-content: space-between; position: relative; overflow: hidden;">
-            <div style="text-align: center; padding-bottom: 8px; background: rgba(255,255,255,0.6); border-radius: 8px; padding-top: 6px;">
+          <div class="card-item" style="width: 105mm; height: 148.5mm; ${bgFallback} border: none; border-radius: 12px; padding: 14px; display: flex; flex-direction: column; justify-content: space-between; position: relative; overflow: hidden;">
+            ${bgImgHtml}
+            <div style="position: relative; z-index: 1; text-align: center; padding-bottom: 8px; background: rgba(255,255,255,0.6); border-radius: 8px; padding-top: 6px;">
               <div style="font-size: 13.5px; font-weight: 700; color: #064e3b;">บัตรประจำตัวครูผู้ฝึกสอน</div>
               <div style="font-size: 10.5px; font-weight: 700; color: #047857;">งานส่งเสริมวันมาฆบูชา ครั้งที่ ๑๔ พ.ศ. ๒๕๗๐</div>
               <div style="font-size: 9.5px; color: #059669;">${escapeHtml(EVENT_DATE_TH)}</div>
             </div>
 
-            <div style="display: flex; justify-content: center; margin: 4px 0;">
+            <div style="position: relative; z-index: 1; display: flex; justify-content: center; margin: 4px 0;">
               <div style="width: 42mm; height: 52mm; border-radius: 10px; border: 2px solid rgba(255,255,255,0.92); box-shadow: 0 2px 8px rgba(15,23,42,0.12); background: rgba(255,255,255,0.75); display: flex; align-items: center; justify-content: center; overflow: hidden;">
                 ${
                   coachPhoto
-                    ? `<img src="${coachPhoto}" style="width: 100%; height: 100%; object-fit: cover; object-position: center top;" />`
+                    ? `<img src="${escapeHtml(coachPhoto)}" style="width: 100%; height: 100%; object-fit: cover; object-position: center top;" />`
                     : `<span style="font-size: 11px; color: #64748b; text-align: center; padding: 6px;">รูปภาพครูผู้ฝึกสอน<br/>(คนที่ ${cIdx + 1})</span>`
                 }
               </div>
             </div>
 
-            <div style="background: rgba(255,255,255,0.72); border-radius: 10px; padding: 8px 10px; font-size: 10.5px; line-height: 1.4;">
+            <div style="position: relative; z-index: 1; background: rgba(255,255,255,0.72); border-radius: 10px; padding: 8px 10px; font-size: 10.5px; line-height: 1.4;">
               <div><strong>ครูผู้ฝึกสอน:</strong> ${escapeHtml(coachName)}</div>
               <div><strong>โรงเรียน:</strong> ${escapeHtml(school ? school.name : '-')}</div>
               <div><strong>ผู้แข่งขัน:</strong> ${escapeHtml(competitorSummary)}</div>
@@ -2909,7 +3003,7 @@ export default function App() {
               <div><strong>เวลา:</strong> ${escapeHtml(sched.timeRange)}</div>
             </div>
 
-            <div style="text-align: center; font-size: 9.5px; font-weight: 700; color: #065f46; background: rgba(255,255,255,0.6); padding: 4px; border-radius: 6px;">
+            <div style="position: relative; z-index: 1; text-align: center; font-size: 9.5px; font-weight: 700; color: #065f46; background: rgba(255,255,255,0.6); padding: 4px; border-radius: 6px;">
               ครูผู้ฝึกสอน
             </div>
           </div>
@@ -2943,30 +3037,32 @@ export default function App() {
         venue: 'กำหนดในวันงาน',
         timeRange: '08.30 น. เป็นต้นไป'
       };
-      const bgStyle = safeBgUrl
-        ? `background-image: url('${safeBgUrl}'); background-size: cover; background-position: center;`
-        : `background: linear-gradient(160deg, #eff6ff 0%, #dbeafe 50%, #f0fdf4 100%);`;
+      const bgFallback = `background: linear-gradient(160deg, #eff6ff 0%, #dbeafe 50%, #f0fdf4 100%);`;
+      const bgImgHtml = safeBgUrl
+        ? `<img src="${escapeHtml(safeBgUrl)}" alt="" style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center; z-index: 0; pointer-events: none;" />`
+        : '';
       const safeJudgePhoto = safeImageUrl(jdg.photoUrl);
 
       return `
-        <div class="card-item" style="width: 105mm; height: 148.5mm; ${bgStyle} border: none; border-radius: 12px; padding: 14px; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden;">
-          <div style="text-align: center; padding-bottom: 8px; background: rgba(255,255,255,0.6); border-radius: 8px; padding-top: 6px;">
+        <div class="card-item" style="width: 105mm; height: 148.5mm; ${bgFallback} border: none; border-radius: 12px; padding: 14px; display: flex; flex-direction: column; justify-content: space-between; position: relative; overflow: hidden;">
+          ${bgImgHtml}
+          <div style="position: relative; z-index: 1; text-align: center; padding-bottom: 8px; background: rgba(255,255,255,0.6); border-radius: 8px; padding-top: 6px;">
             <div style="font-size: 13.5px; font-weight: 700; color: #0c4a6e;">บัตรประจำตัวกรรมการตัดสิน</div>
             <div style="font-size: 10.5px; font-weight: 700; color: #0369a1;">งานส่งเสริมวันมาฆบูชา ครั้งที่ ๑๔ พ.ศ. ๒๕๗๐</div>
             <div style="font-size: 9.5px; color: #0284c7;">${escapeHtml(EVENT_DATE_TH)}</div>
           </div>
 
-          <div style="display: flex; justify-content: center; margin: 4px 0;">
+          <div style="position: relative; z-index: 1; display: flex; justify-content: center; margin: 4px 0;">
             <div style="width: 40mm; height: 50mm; border-radius: 10px; border: 2px solid rgba(255,255,255,0.92); box-shadow: 0 2px 8px rgba(15,23,42,0.12); background: rgba(255,255,255,0.75); display: flex; align-items: center; justify-content: center; overflow: hidden;">
               ${
                 safeJudgePhoto
-                  ? `<img src="${safeJudgePhoto}" style="width: 100%; height: 100%; object-fit: cover; object-position: center top;" />`
+                  ? `<img src="${escapeHtml(safeJudgePhoto)}" style="width: 100%; height: 100%; object-fit: cover; object-position: center top;" />`
                   : `<span style="font-size: 11px; color: #64748b; text-align: center; padding: 6px;">รูปภาพกรรมการ</span>`
               }
             </div>
           </div>
 
-          <div style="background: rgba(255,255,255,0.72); border-radius: 10px; padding: 8px 10px; font-size: 10.5px; line-height: 1.38;">
+          <div style="position: relative; z-index: 1; background: rgba(255,255,255,0.72); border-radius: 10px; padding: 8px 10px; font-size: 10.5px; line-height: 1.38;">
             <div><strong>ชื่อ-สกุล:</strong> ${escapeHtml(jdg.name)}</div>
             <div><strong>ตำแหน่ง:</strong> ${escapeHtml(jdg.position)}</div>
             <div><strong>กิจกรรมที่ตัดสิน:</strong> ${escapeHtml(comp ? comp.name : '-')}</div>
@@ -2978,7 +3074,7 @@ export default function App() {
             </div>
           </div>
 
-          <div style="text-align: center; font-size: 9.5px; font-weight: 700; color: #0369a1; background: rgba(255,255,255,0.6); padding: 4px; border-radius: 6px;">
+          <div style="position: relative; z-index: 1; text-align: center; font-size: 9.5px; font-weight: 700; color: #0369a1; background: rgba(255,255,255,0.6); padding: 4px; border-radius: 6px;">
             คณะกรรมการตัดสินการแข่งขัน
           </div>
         </div>
@@ -3003,12 +3099,13 @@ export default function App() {
 
     const safeCertBg = safeImageUrl(certBgUrl);
     const pagesHtml = certsList.map((cert) => {
-      const bgStyle = safeCertBg
-        ? `background-image: url('${safeCertBg}'); background-size: cover; background-position: center;`
-        : `background: linear-gradient(135deg, #fffdf7 0%, #fef9c3 35%, #fffbeb 70%, #fef3c7 100%);`;
+      const bgFallback = `background: linear-gradient(135deg, #fffdf7 0%, #fef9c3 35%, #fffbeb 70%, #fef3c7 100%);`;
+      const certBgImgHtml = safeCertBg
+        ? `<img src="${escapeHtml(safeCertBg)}" alt="" style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center; z-index: 0; pointer-events: none;" />`
+        : '';
 
       const line1Name = cert.line1Name || cert.recipientName || '';
-      const line2Position = cert.line2Position || cert.roleLabel || '';
+      const line2Position = cert.line2Position || (cert.roleLabel ? `เป็น${cert.roleLabel}` : '');
       const line3Activity =
         cert.line3Activity ||
         `เป็นกรรมการตัดสินกิจกรรมการ${cert.activityName || ''} ${cert.levelName || ''}`.trim();
@@ -3025,13 +3122,14 @@ export default function App() {
         : 13.5;
 
       return `
-        <div class="page-break" style="width: 297mm; height: 210mm; ${bgStyle} padding: 16mm; position: relative; display: flex; justify-content: center;">
+        <div class="page-break" style="width: 297mm; height: 210mm; ${bgFallback} padding: 16mm; position: relative; overflow: hidden; display: flex; justify-content: center;">
+          ${certBgImgHtml}
           ${
             cert.certNumber
-              ? `<div style="position: absolute; top: 4cm; right: 1cm; font-size: 10pt; font-weight: 600; color: #0f172a; text-align: right;">${escapeHtml(cert.certNumber)}</div>`
+              ? `<div style="position: absolute; top: 4cm; right: 1cm; z-index: 1; font-size: 10pt; font-weight: 600; color: #0f172a; text-align: right;">${escapeHtml(cert.certNumber)}</div>`
               : ''
           }
-          <div style="position: absolute; top: 7.3cm; left: 0; right: 0; width: 100%; background: transparent; padding: 0 36px; display: flex; flex-direction: column; justify-content: flex-start; align-items: center; text-align: center; gap: 10px;">
+          <div style="position: absolute; top: 7.3cm; left: 0; right: 0; width: 100%; z-index: 1; background: transparent; padding: 0 36px; display: flex; flex-direction: column; justify-content: flex-start; align-items: center; text-align: center; gap: 10px;">
             <div style="font-size: 19pt; font-weight: 700; color: #0f172a; line-height: 1.4;">
               ${escapeHtml(line1Name)}
             </div>
@@ -6541,33 +6639,38 @@ export default function App() {
               timeRange: '08.30 น. เป็นต้นไป'
             };
 
-            return reg.students.map((st, sIdx) => (
+            return reg.students.map((st, sIdx) => {
+              const safeStuBg = safeImageUrl(studentCardBgUrl);
+              const safeStuPhoto = safeImageUrl(st.photoUrl);
+              return (
               <div
                 key={`${reg.id}-${sIdx}`}
-                style={
-                  studentCardBgUrl
-                    ? { backgroundImage: `url(${studentCardBgUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
-                    : undefined
-                }
-                className="w-[265px] min-h-[375px] rounded-2xl bg-gradient-to-b from-amber-50 via-white to-orange-50 p-3.5 flex flex-col justify-between gap-2 shadow-md"
+                className="relative overflow-hidden w-[265px] min-h-[375px] rounded-2xl bg-gradient-to-b from-amber-50 via-white to-orange-50 p-3.5 flex flex-col justify-between gap-2 shadow-md"
               >
-                <div className="text-center bg-white/70 rounded-xl py-1.5 px-2">
+                {safeStuBg && (
+                  <img
+                    src={safeStuBg}
+                    alt=""
+                    className="absolute inset-0 w-full h-full object-cover object-center pointer-events-none"
+                  />
+                )}
+                <div className="relative z-10 text-center bg-white/70 rounded-xl py-1.5 px-2">
                   <div className="text-xs font-bold text-slate-800">บัตรประจำตัวผู้เข้าแข่งขัน</div>
                   <div className="text-[10px] font-bold text-amber-700">งานส่งเสริมวันมาฆบูชา ครั้งที่ 14 พ.ศ. 2570</div>
                   <div className="text-[9.5px] text-slate-500">17 กุมภาพันธ์ 2570</div>
                 </div>
 
-                <div className="flex justify-center">
+                <div className="relative z-10 flex justify-center">
                   <div className="w-[112px] h-[140px] rounded-xl border-2 border-white shadow-sm bg-white/75 overflow-hidden flex items-center justify-center">
-                    {st.photoUrl ? (
-                      <img src={st.photoUrl} alt={st.name} className="w-full h-full object-cover object-top" />
+                    {safeStuPhoto ? (
+                      <img src={safeStuPhoto} alt={st.name} className="w-full h-full object-cover object-top" />
                     ) : (
                       <span className="text-[11px] text-slate-400 text-center px-2">รูปภาพนักเรียน</span>
                     )}
                   </div>
                 </div>
 
-                <div className="bg-white/70 rounded-xl p-2 text-[11px] space-y-0.5 leading-snug">
+                <div className="relative z-10 bg-white/70 rounded-xl p-2 text-[11px] space-y-0.5 leading-snug">
                   <div><strong>ชื่อ:</strong> {st.name}</div>
                   <div><strong>โรงเรียน:</strong> {sch?.name}</div>
                   <div><strong>กิจกรรม:</strong> {comp?.name}</div>
@@ -6576,11 +6679,12 @@ export default function App() {
                   <div><strong>เวลา:</strong> {sched.timeRange}</div>
                 </div>
 
-                <div className="text-center text-[12px] font-bold text-amber-800 bg-white/60 rounded-lg py-1">
+                <div className="relative z-10 text-center text-[12px] font-bold text-amber-800 bg-white/60 rounded-lg py-1">
                   ผู้เข้าแข่งขัน
                 </div>
               </div>
-            ));
+              );
+            });
           })}
         </div>
       </div>
@@ -6700,25 +6804,28 @@ export default function App() {
 
             return reg.coaches.map((coachItem, cIdx) => {
               const coachName = typeof coachItem === 'string' ? coachItem : coachItem.name;
-              const coachPhoto = typeof coachItem === 'string' ? '' : coachItem.photoUrl || '';
+              const coachPhoto = safeImageUrl(typeof coachItem === 'string' ? '' : coachItem.photoUrl || '');
+              const safeCoachBg = safeImageUrl(coachCardBgUrl);
 
               return (
                 <div
                   key={`${reg.id}-coach-${cIdx}`}
-                  style={
-                    coachCardBgUrl
-                      ? { backgroundImage: `url(${coachCardBgUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
-                      : undefined
-                  }
-                  className="w-[265px] min-h-[385px] rounded-2xl bg-gradient-to-b from-emerald-50 via-white to-teal-50 p-3.5 flex flex-col justify-between gap-2 shadow-md"
+                  className="relative overflow-hidden w-[265px] min-h-[385px] rounded-2xl bg-gradient-to-b from-emerald-50 via-white to-teal-50 p-3.5 flex flex-col justify-between gap-2 shadow-md"
                 >
-                  <div className="text-center bg-white/70 rounded-xl py-1.5 px-2">
+                  {safeCoachBg && (
+                    <img
+                      src={safeCoachBg}
+                      alt=""
+                      className="absolute inset-0 w-full h-full object-cover object-center pointer-events-none"
+                    />
+                  )}
+                  <div className="relative z-10 text-center bg-white/70 rounded-xl py-1.5 px-2">
                     <div className="text-xs font-bold text-slate-800">บัตรประจำตัวครูผู้ฝึกสอน</div>
                     <div className="text-[10px] font-bold text-emerald-700">งานส่งเสริมวันมาฆบูชา ครั้งที่ 14 พ.ศ. 2570</div>
                     <div className="text-[9.5px] text-slate-500">17 กุมภาพันธ์ 2570</div>
                   </div>
 
-                  <div className="flex flex-col items-center gap-1.5">
+                  <div className="relative z-10 flex flex-col items-center gap-1.5">
                     <div className="w-[108px] h-[134px] rounded-xl border-2 border-white shadow-sm bg-white/75 overflow-hidden flex items-center justify-center">
                       {coachPhoto ? (
                         <img src={coachPhoto} alt={coachName} className="w-full h-full object-cover object-top" />
@@ -6728,7 +6835,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="bg-white/70 rounded-xl p-2 text-[11px] space-y-0.5 leading-snug">
+                  <div className="relative z-10 bg-white/70 rounded-xl p-2 text-[11px] space-y-0.5 leading-snug">
                     <div><strong className="text-slate-800">ครูผู้ฝึกสอน:</strong> {coachName}</div>
                     <div><strong className="text-slate-800">โรงเรียน:</strong> {sch?.name}</div>
                     <div className="truncate"><strong className="text-slate-800">ผู้แข่งขัน:</strong> {competitorNames}</div>
@@ -6738,7 +6845,7 @@ export default function App() {
                     <div><strong className="text-slate-800">เวลา:</strong> {sched.timeRange}</div>
                   </div>
 
-                  <div className="text-center text-[12px] font-bold text-emerald-800 bg-white/60 rounded-lg py-1">
+                  <div className="relative z-10 text-center text-[12px] font-bold text-emerald-800 bg-white/60 rounded-lg py-1">
                     ครูผู้ฝึกสอน
                   </div>
                 </div>
@@ -6830,34 +6937,38 @@ export default function App() {
               venue: 'กำหนดในวันงาน',
               timeRange: '08.30 น. เป็นต้นไป'
             };
+            const safeJudgeBg = safeImageUrl(judgeCardBgUrl);
+            const safeJudgePhoto = safeImageUrl(jdg.photoUrl);
 
             return (
               <div
                 key={jdg.id}
-                style={
-                  judgeCardBgUrl
-                    ? { backgroundImage: `url(${judgeCardBgUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
-                    : undefined
-                }
-                className="w-[265px] min-h-[385px] rounded-2xl bg-gradient-to-b from-sky-50 via-white to-indigo-50 p-3.5 flex flex-col justify-between gap-2 shadow-md"
+                className="relative overflow-hidden w-[265px] min-h-[385px] rounded-2xl bg-gradient-to-b from-sky-50 via-white to-indigo-50 p-3.5 flex flex-col justify-between gap-2 shadow-md"
               >
-                <div className="text-center bg-white/70 rounded-xl py-1.5 px-2">
+                {safeJudgeBg && (
+                  <img
+                    src={safeJudgeBg}
+                    alt=""
+                    className="absolute inset-0 w-full h-full object-cover object-center pointer-events-none"
+                  />
+                )}
+                <div className="relative z-10 text-center bg-white/70 rounded-xl py-1.5 px-2">
                   <div className="text-xs font-bold text-slate-800">บัตรประจำตัวกรรมการตัดสิน</div>
                   <div className="text-[10px] font-bold text-sky-700">งานส่งเสริมวันมาฆบูชา ครั้งที่ 14 พ.ศ. 2570</div>
                   <div className="text-[9.5px] text-slate-500">17 กุมภาพันธ์ 2570</div>
                 </div>
 
-                <div className="flex justify-center">
+                <div className="relative z-10 flex justify-center">
                   <div className="w-[102px] h-[126px] rounded-xl border-2 border-white shadow-sm bg-white/75 overflow-hidden flex items-center justify-center">
-                    {jdg.photoUrl ? (
-                      <img src={jdg.photoUrl} alt={jdg.name} className="w-full h-full object-cover object-top" />
+                    {safeJudgePhoto ? (
+                      <img src={safeJudgePhoto} alt={jdg.name} className="w-full h-full object-cover object-top" />
                     ) : (
                       <span className="text-[11px] text-slate-400 text-center px-2">รูปภาพกรรมการ</span>
                     )}
                   </div>
                 </div>
 
-                <div className="bg-white/70 rounded-xl p-2 text-[11px] space-y-0.5 leading-snug">
+                <div className="relative z-10 bg-white/70 rounded-xl p-2 text-[11px] space-y-0.5 leading-snug">
                   <div><strong>ชื่อ:</strong> {jdg.name}</div>
                   <div><strong>ตำแหน่ง:</strong> {jdg.position}</div>
                   <div><strong>กิจกรรม:</strong> {comp?.name}</div>
@@ -6870,7 +6981,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="text-center text-[12px] font-bold text-sky-800 bg-white/60 rounded-lg py-1">
+                <div className="relative z-10 text-center text-[12px] font-bold text-sky-800 bg-white/60 rounded-lg py-1">
                   กรรมการตัดสิน
                 </div>
               </div>
@@ -6920,7 +7031,7 @@ export default function App() {
         activityName: activityText,
         levelName: levelText,
         line1Name: j.name,
-        line2Position: `${positionText} การแข่งขัน${activityText}`.trim(),
+        line2Position: activityText ? `เป็น${positionText}  การแข่งขัน${activityText}` : `เป็น${positionText}`,
         line3Activity: levelText
       };
     });
@@ -9819,7 +9930,7 @@ export default function App() {
                 {studentCardBgUrl && (
                   <div className="flex items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50/40 px-2.5 py-1.5">
                     <div className="flex items-center gap-2 min-w-0">
-                      <img src={studentCardBgUrl} alt="ตัวอย่างพื้นหลังบัตรผู้เข้าแข่งขัน" className="w-8 h-10 rounded object-cover border border-amber-200 shrink-0" />
+                      <img src={safeImageUrl(studentCardBgUrl)} alt="ตัวอย่างพื้นหลังบัตรผู้เข้าแข่งขัน" className="w-8 h-10 rounded object-cover border border-amber-200 shrink-0" />
                       <span className="text-[11px] font-semibold text-emerald-700 truncate">จัดเก็บบนเซิร์ฟเวอร์แล้ว</span>
                     </div>
                     <button
@@ -9852,7 +9963,7 @@ export default function App() {
                 {coachCardBgUrl && (
                   <div className="flex items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50/40 px-2.5 py-1.5">
                     <div className="flex items-center gap-2 min-w-0">
-                      <img src={coachCardBgUrl} alt="ตัวอย่างพื้นหลังบัตรครูผู้ฝึกสอน" className="w-8 h-10 rounded object-cover border border-emerald-200 shrink-0" />
+                      <img src={safeImageUrl(coachCardBgUrl)} alt="ตัวอย่างพื้นหลังบัตรครูผู้ฝึกสอน" className="w-8 h-10 rounded object-cover border border-emerald-200 shrink-0" />
                       <span className="text-[11px] font-semibold text-emerald-700 truncate">จัดเก็บบนเซิร์ฟเวอร์แล้ว</span>
                     </div>
                     <button
@@ -9885,7 +9996,7 @@ export default function App() {
                 {judgeCardBgUrl && (
                   <div className="flex items-center justify-between gap-2 rounded-lg border border-indigo-200 bg-indigo-50/40 px-2.5 py-1.5">
                     <div className="flex items-center gap-2 min-w-0">
-                      <img src={judgeCardBgUrl} alt="ตัวอย่างพื้นหลังบัตรกรรมการ" className="w-8 h-10 rounded object-cover border border-indigo-200 shrink-0" />
+                      <img src={safeImageUrl(judgeCardBgUrl)} alt="ตัวอย่างพื้นหลังบัตรกรรมการ" className="w-8 h-10 rounded object-cover border border-indigo-200 shrink-0" />
                       <span className="text-[11px] font-semibold text-emerald-700 truncate">จัดเก็บบนเซิร์ฟเวอร์แล้ว</span>
                     </div>
                     <button
@@ -9918,7 +10029,7 @@ export default function App() {
                 {certBgUrl && (
                   <div className="flex items-center justify-between gap-2 rounded-lg border border-teal-200 bg-teal-50/40 px-3 py-2">
                     <div className="flex items-center gap-2.5 min-w-0">
-                      <img src={certBgUrl} alt="ตัวอย่างพื้นหลังเกียรติบัตร" className="w-14 h-10 rounded object-cover border border-teal-200 shrink-0" />
+                      <img src={safeImageUrl(certBgUrl)} alt="ตัวอย่างพื้นหลังเกียรติบัตร" className="w-14 h-10 rounded object-cover border border-teal-200 shrink-0" />
                       <span className="text-xs font-semibold text-emerald-700 truncate">จัดเก็บพื้นหลังเกียรติบัตรบนเซิร์ฟเวอร์แล้ว</span>
                     </div>
                     <button

@@ -16,10 +16,25 @@
     if (/^data:image\/(png|jpeg|jpg|gif|webp);base64,[A-Za-z0-9+/=]+$/i.test(str)) {
       return str;
     }
-    if (/^(https?:\/\/|uploads\/|\/)/i.test(str) && !/["'<>`\\]/.test(str)) {
-      return str;
+    if (/["'<>`\\]/.test(str) || /^javascript:/i.test(str)) {
+      return '';
+    }
+    if (/^(https?:\/\/|(?:\.\/)?uploads\/|\/)/i.test(str)) {
+      return str.replace(/^\.\//, '');
     }
     return '';
+  }
+
+  function getDocumentBaseHref() {
+    try {
+      const loc = global.location;
+      if (!loc) return '/';
+      const path = loc.pathname || '/';
+      const dir = path.endsWith('/') ? path : path.slice(0, path.lastIndexOf('/') + 1) || '/';
+      return new URL(dir, loc.origin).href;
+    } catch (_err) {
+      return '/';
+    }
   }
 
   function toThaiDigits(val) {
@@ -96,8 +111,10 @@
 
   function buildPrintableHtmlDoc(title, bodyHtml, pageSizeCss, extraStyleCss) {
     const safeTitle = escapeHtml(title);
+    const baseHref = escapeHtml(getDocumentBaseHref());
     const thaiBody = convertHtmlTextToThaiDigits(bodyHtml);
     return '<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8" />' +
+      '<base href="' + baseHref + '" />' +
       '<title>' + safeTitle + '</title>' +
       '<link rel="preconnect" href="https://fonts.googleapis.com">' +
       '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>' +
