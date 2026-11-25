@@ -38,9 +38,9 @@
 1. ในหน้า **Plesk → Websites & Domains → Node.js** ให้ตั้งค่าดังนี้:
    - **Document Root**: ตั้งเป็นโฟลเดอร์ย่อย **`/httpdocs/public`** (ตามที่ Plesk แนะนำเพื่อความปลอดภัย ไม่ควรชี้ไปที่ `/httpdocs` ตรงๆ)
    - **Application Root**: **`/httpdocs`**
-   - **Node.js Version**: แนะนำ **Node.js 22.x** ขึ้นไป (เพื่อรันไฟล์ `server.ts` ได้โดยตรง)
-   - **Application Startup File**: **`server.ts`**
-2. กดปุ่ม **NPM install** ในหน้า Node.js ของ Plesk จากนั้นสั่ง Build หน้าเว็บด้วยปุ่ม **Run script** → ใส่คำสั่ง `build` (หรือรัน `npm run build` ผ่าน SSH/Git deployment) เพื่อให้ได้โฟลเดอร์ `dist/`
+   - **Node.js Version**: เลือก **Node.js 18.x / 20.x / 22.x**
+   - **Application Startup File**: **`app.cjs`** (หรือ **`server.cjs`**) — ห้ามใช้ไฟล์ที่โหลดแบบ Async เพราะ Phusion Passenger จะแจ้ง `The application started, then exited.`
+2. กดปุ่ม **NPM install** ในหน้า Node.js ของ Plesk จากนั้นสั่ง Build หน้าเว็บด้วยปุ่ม **Run script** → ใส่คำสั่ง `build` (หรือรัน `npm run build` ผ่าน SSH/Git deployment) เพื่อให้ได้ `dist/` และ `server.cjs`
 3. กด **Restart App** เว็บไซต์และระบบอัปโหลดภาพ/ฐานข้อมูลจะทำงานได้สมบูรณ์โดยไม่มีคำเตือนเรื่อง Document Root
 
 ---

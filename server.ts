@@ -3,7 +3,6 @@ import dotenv from 'dotenv';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import fs from 'fs';
 import path from 'path';
-import { createServer as createViteServer } from 'vite';
 import { createAppStoreRouter, UPLOAD_CATEGORIES } from './src/server/appStore.ts';
 import { COMPETITIONS, getCompetitionById } from './src/shared/competitions.ts';
 import type {
@@ -359,7 +358,7 @@ function isAdminClaimed(): boolean {
   return isEnvAdminConfigured() || Boolean(db.adminCredentialHash);
 }
 
-async function startServer() {
+function startServer() {
   const app = express();
   app.use(express.json({ limit: '10mb' }));
 
@@ -1388,56 +1387,77 @@ async function startServer() {
   // Vite middleware in development, static files in production
   const distDir = path.resolve(process.cwd(), 'dist');
   const hasBuiltDist = fs.existsSync(path.resolve(distDir, 'index.html'));
-  const isDevLifecycle = process.env.npm_lifecycle_event === 'dev' || process.env.NODE_ENV === 'development';
-  const isProductionMode = process.env.NODE_ENV === 'production' || (!isDevLifecycle && hasBuiltDist);
+  const isPassenger = Boolean(
+    process.env.IN_PASSENGER || process.env.PASSENGER_APP_ENV || process.env.PASSENGER_BASE_URI
+  );
+  const isDevLifecycle =
+    (process.env.npm_lifecycle_event === 'dev' || process.env.NODE_ENV === 'development') && !isPassenger;
+  const isProductionMode =
+    isPassenger || process.env.NODE_ENV === 'production' || (!isDevLifecycle && hasBuiltDist);
+
+  const listenApp = () => {
+    const onListening = () => {
+      console.log(
+        `Makha Bucha Competition Server running on ${typeof PORT === 'number' ? `http://localhost:${PORT}` : PORT}`
+      );
+    };
+    if (typeof PORT === 'number') {
+      return app.listen(PORT, '0.0.0.0', onListening);
+    }
+    return app.listen(PORT, onListening);
+  };
 
   if (!isProductionMode) {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    app.use(
-      express.static(distDir, {
-        setHeaders: (res, filePath) => {
-          if (filePath.endsWith('.js') || filePath.endsWith('.mjs')) {
-            res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-          } else if (filePath.endsWith('.css')) {
-            res.setHeader('Content-Type', 'text/css; charset=utf-8');
-          } else if (filePath.endsWith('.wasm')) {
-            res.setHeader('Content-Type', 'application/wasm');
-          } else if (filePath.endsWith('.svg')) {
-            res.setHeader('Content-Type', 'image/svg+xml');
-          } else if (filePath.endsWith('.json')) {
-            res.setHeader('Content-Type', 'application/json; charset=utf-8');
-          }
-        },
-      }),
-    );
-    app.get('*', (_req, res) => {
-      const indexFile = path.resolve(distDir, 'index.html');
-      if (!fs.existsSync(indexFile)) {
-        res
-          .status(503)
-          .type('html')
-          .send(
-            '<!doctype html><html lang="th"><meta charset="utf-8"><body style="font-family:sans-serif;padding:32px;line-height:1.7"><h2>ยังไม่ได้ Build หน้าเว็บ (dist/index.html)</h2><p>กรุณารันคำสั่ง <code>npm run build</code> ใน Plesk หรือเซิร์ฟเวอร์ แล้วกด Restart App อีกครั้ง</p></body></html>'
-          );
-        return;
-      }
-      res.sendFile(indexFile);
-    });
+    import('vite')
+      .then(({ createServer: createViteServer }) =>
+        createViteServer({
+          server: { middlewareMode: true },
+          appType: 'spa',
+        })
+      )
+      .then((vite) => {
+        app.use(vite.middlewares);
+        listenApp();
+      })
+      .catch((err) => {
+        console.error('Failed to start Vite dev server:', err);
+        process.exit(1);
+      });
+    return null;
   }
 
-  const onListening = () => {
-    console.log(`Makha Bucha Competition Server running on ${typeof PORT === 'number' ? `http://localhost:${PORT}` : PORT}`);
-  };
-  if (typeof PORT === 'number') {
-    app.listen(PORT, '0.0.0.0', onListening);
-  } else {
-    app.listen(PORT, onListening);
-  }
+  app.use(
+    express.static(distDir, {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.js') || filePath.endsWith('.mjs')) {
+          res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+        } else if (filePath.endsWith('.css')) {
+          res.setHeader('Content-Type', 'text/css; charset=utf-8');
+        } else if (filePath.endsWith('.wasm')) {
+          res.setHeader('Content-Type', 'application/wasm');
+        } else if (filePath.endsWith('.svg')) {
+          res.setHeader('Content-Type', 'image/svg+xml');
+        } else if (filePath.endsWith('.json')) {
+          res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        }
+      },
+    }),
+  );
+  app.get('*', (_req, res) => {
+    const indexFile = path.resolve(distDir, 'index.html');
+    if (!fs.existsSync(indexFile)) {
+      res
+        .status(503)
+        .type('html')
+        .send(
+          '<!doctype html><html lang="th"><meta charset="utf-8"><body style="font-family:sans-serif;padding:32px;line-height:1.7"><h2>ยังไม่ได้ Build หน้าเว็บ (dist/index.html)</h2><p>กรุณารันคำสั่ง <code>npm run build</code> ใน Plesk หรือเซิร์ฟเวอร์ แล้วกด Restart App อีกครั้ง</p></body></html>'
+        );
+      return;
+    }
+    res.sendFile(indexFile);
+  });
+
+  return listenApp();
 }
 
-startServer();
+export default startServer();
