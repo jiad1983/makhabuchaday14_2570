@@ -26,7 +26,8 @@ import type {
 
 dotenv.config();
 
-const PORT = Number(process.env.PORT) || 3000;
+const RAW_PORT = process.env.PORT;
+const PORT: number | string = RAW_PORT ? (/^\d+$/.test(RAW_PORT) ? Number(RAW_PORT) : RAW_PORT) : 3000;
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const UPLOADS_DIR = path.resolve(DATA_DIR, 'uploads');
 const DB_FILE = path.resolve(DATA_DIR, 'db.json');
@@ -1415,13 +1416,28 @@ async function startServer() {
       }),
     );
     app.get('*', (_req, res) => {
-      res.sendFile(path.resolve(distDir, 'index.html'));
+      const indexFile = path.resolve(distDir, 'index.html');
+      if (!fs.existsSync(indexFile)) {
+        res
+          .status(503)
+          .type('html')
+          .send(
+            '<!doctype html><html lang="th"><meta charset="utf-8"><body style="font-family:sans-serif;padding:32px;line-height:1.7"><h2>ยังไม่ได้ Build หน้าเว็บ (dist/index.html)</h2><p>กรุณารันคำสั่ง <code>npm run build</code> ใน Plesk หรือเซิร์ฟเวอร์ แล้วกด Restart App อีกครั้ง</p></body></html>'
+          );
+        return;
+      }
+      res.sendFile(indexFile);
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Makha Bucha Competition Server running on http://localhost:${PORT}`);
-  });
+  const onListening = () => {
+    console.log(`Makha Bucha Competition Server running on ${typeof PORT === 'number' ? `http://localhost:${PORT}` : PORT}`);
+  };
+  if (typeof PORT === 'number') {
+    app.listen(PORT, '0.0.0.0', onListening);
+  } else {
+    app.listen(PORT, onListening);
+  }
 }
 
 startServer();

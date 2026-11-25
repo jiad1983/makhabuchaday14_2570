@@ -34,14 +34,14 @@
    - ช่อง **Deployment path** ใช้ค่าเริ่มต้น `/httpdocs` ได้ทันที
    - กด **OK / Pull Updates** เว็บไซต์จะแสดงผลได้ทันทีโดยไม่ต้องติดตั้ง Node.js บน Plesk
 
-### แบบที่ B: โฮสต์ Plesk เชื่อมต่อตรงกับ branch `main` และมี Node.js บน Plesk
-1. ในหน้า **Plesk → Websites & Domains → Git**:
-   - เชื่อมต่อ Repository และเลือก branch **`main`**
-   - เปิด **Enable additional deployment actions** แล้วใส่คำสั่ง:
-     ```bash
-     bash plesk-deploy.sh
-     ```
-2. เว็บไซต์รองรับได้ทั้งกรณีตั้ง **Hosting Settings → Document root** เป็น `/httpdocs/dist` หรือใช้ค่าเริ่มต้น `/httpdocs` (ไฟล์ `.htaccess` ที่ Root จะส่งคำขอไปยัง `dist/` และป้องกันการเข้าถึงไฟล์ซอร์สโค้ดให้อัตโนมัติ)
+### แบบที่ B: โฮสต์ Plesk ใช้โหมด Node.js (แนะนำสำหรับเก็บไฟล์ภาพและข้อมูลบนเซิร์ฟเวอร์จริง)
+1. ในหน้า **Plesk → Websites & Domains → Node.js** ให้ตั้งค่าดังนี้:
+   - **Document Root**: ตั้งเป็นโฟลเดอร์ย่อย **`/httpdocs/public`** (ตามที่ Plesk แนะนำเพื่อความปลอดภัย ไม่ควรชี้ไปที่ `/httpdocs` ตรงๆ)
+   - **Application Root**: **`/httpdocs`**
+   - **Node.js Version**: แนะนำ **Node.js 22.x** ขึ้นไป (เพื่อรันไฟล์ `server.ts` ได้โดยตรง)
+   - **Application Startup File**: **`server.ts`**
+2. กดปุ่ม **NPM install** ในหน้า Node.js ของ Plesk จากนั้นสั่ง Build หน้าเว็บด้วยปุ่ม **Run script** → ใส่คำสั่ง `build` (หรือรัน `npm run build` ผ่าน SSH/Git deployment) เพื่อให้ได้โฟลเดอร์ `dist/`
+3. กด **Restart App** เว็บไซต์และระบบอัปโหลดภาพ/ฐานข้อมูลจะทำงานได้สมบูรณ์โดยไม่มีคำเตือนเรื่อง Document Root
 
 ---
 
