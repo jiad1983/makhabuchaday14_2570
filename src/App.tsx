@@ -1276,23 +1276,27 @@ function buildPrintableHtmlDoc(
 // ============================================================================
 
 export default function App() {
-  const savedState = useMemo(() => {
+  const savedState = useMemo<Record<string, any> | null>(() => {
+    const isPlainObj = (v: unknown): v is Record<string, unknown> =>
+      typeof v === 'object' && v !== null && !Array.isArray(v);
     try {
       const rawFull = localStorage.getItem(STORAGE_KEY);
       const rawCore = localStorage.getItem(CORE_STORAGE_KEY);
-      const fullParsed = rawFull ? JSON.parse(rawFull) : null;
-      const coreParsed = rawCore ? JSON.parse(rawCore) : null;
-      const merged =
+      const fullRawParsed = rawFull ? JSON.parse(rawFull) : null;
+      const coreRawParsed = rawCore ? JSON.parse(rawCore) : null;
+      const fullParsed = isPlainObj(fullRawParsed) ? fullRawParsed : null;
+      const coreParsed = isPlainObj(coreRawParsed) ? coreRawParsed : null;
+      const merged: Record<string, any> =
         fullParsed && coreParsed
           ? { ...fullParsed, ...coreParsed }
           : coreParsed || fullParsed || {};
       return {
         ...merged,
-        bannerBgUrl: loadBackgroundCache('bannerBgUrl') || merged?.bannerBgUrl || '',
-        studentCardBgUrl: loadBackgroundCache('studentCardBgUrl') || merged?.studentCardBgUrl || '',
-        coachCardBgUrl: loadBackgroundCache('coachCardBgUrl') || merged?.coachCardBgUrl || '',
-        judgeCardBgUrl: loadBackgroundCache('judgeCardBgUrl') || merged?.judgeCardBgUrl || '',
-        certBgUrl: loadBackgroundCache('certBgUrl') || merged?.certBgUrl || ''
+        bannerBgUrl: loadBackgroundCache('bannerBgUrl') || (typeof merged?.bannerBgUrl === 'string' ? merged.bannerBgUrl : ''),
+        studentCardBgUrl: loadBackgroundCache('studentCardBgUrl') || (typeof merged?.studentCardBgUrl === 'string' ? merged.studentCardBgUrl : ''),
+        coachCardBgUrl: loadBackgroundCache('coachCardBgUrl') || (typeof merged?.coachCardBgUrl === 'string' ? merged.coachCardBgUrl : ''),
+        judgeCardBgUrl: loadBackgroundCache('judgeCardBgUrl') || (typeof merged?.judgeCardBgUrl === 'string' ? merged.judgeCardBgUrl : ''),
+        certBgUrl: loadBackgroundCache('certBgUrl') || (typeof merged?.certBgUrl === 'string' ? merged.certBgUrl : '')
       };
     } catch {
       return null;
@@ -1837,57 +1841,114 @@ export default function App() {
   const [certBgUrl, setCertBgUrl] = useState<string>(() => savedState?.certBgUrl || '');
 
   // ---------------- Core Domain Entities ----------------
-  const [schools, setSchools] = useState<SchoolItem[]>(() =>
-    Array.isArray(savedState?.schools) ? savedState.schools : INITIAL_SCHOOLS
-  );
-  const [judges, setJudges] = useState<JudgeItem[]>(() =>
-    Array.isArray(savedState?.judges) ? savedState.judges : INITIAL_JUDGES
-  );
-  const [schedules, setSchedules] = useState<Record<string, ScheduleItem>>(() =>
-    savedState?.schedules && typeof savedState.schedules === 'object'
-      ? savedState.schedules
-      : buildInitialSchedules()
-  );
-  const [registrations, setRegistrations] = useState<RegistrationItem[]>(() =>
-    Array.isArray(savedState?.registrations) ? savedState.registrations : INITIAL_REGISTRATIONS
-  );
+  const isPlainRecord = (v: unknown): v is Record<string, any> =>
+    typeof v === 'object' && v !== null && !Array.isArray(v);
+
+  const [schools, setSchools] = useState<SchoolItem[]>(() => {
+    if (!Array.isArray(savedState?.schools)) return INITIAL_SCHOOLS;
+    return savedState.schools
+      .filter((s: unknown): s is Record<string, any> => isPlainRecord(s) && typeof s.id === 'string')
+      .map((s: Record<string, any>) => ({
+        id: String(s.id),
+        schoolCode: String(s.schoolCode ?? ''),
+        password: String(s.password ?? ''),
+        name: String(s.name ?? ''),
+        director: String(s.director ?? ''),
+        phone: String(s.phone ?? '')
+      }));
+  });
+  const [judges, setJudges] = useState<JudgeItem[]>(() => {
+    if (!Array.isArray(savedState?.judges)) return INITIAL_JUDGES;
+    return savedState.judges
+      .filter((j: unknown): j is Record<string, any> => isPlainRecord(j) && typeof j.id === 'string')
+      .map((j: Record<string, any>) => ({
+        id: String(j.id),
+        username: String(j.username ?? ''),
+        password: String(j.password ?? ''),
+        name: String(j.name ?? ''),
+        position: String(j.position ?? 'กรรมการตัดสิน'),
+        competitionId: String(j.competitionId ?? COMPETITIONS[0].id),
+        level: String(j.level ?? COMPETITIONS[0].levels[0]),
+        photoUrl: String(j.photoUrl ?? '')
+      }));
+  });
+  const [schedules, setSchedules] = useState<Record<string, ScheduleItem>>(() => {
+    const defaults = buildInitialSchedules();
+    if (!isPlainRecord(savedState?.schedules)) return defaults;
+    return { ...defaults, ...savedState.schedules };
+  });
+  const [registrations, setRegistrations] = useState<RegistrationItem[]>(() => {
+    if (!Array.isArray(savedState?.registrations)) return INITIAL_REGISTRATIONS;
+    return savedState.registrations
+      .filter((r: unknown): r is Record<string, any> => isPlainRecord(r) && typeof r.id === 'string')
+      .map((r: Record<string, any>) => ({
+        id: String(r.id),
+        schoolId: String(r.schoolId ?? ''),
+        competitionId: String(r.competitionId ?? COMPETITIONS[0].id),
+        level: String(r.level ?? COMPETITIONS[0].levels[0]),
+        students: Array.isArray(r.students)
+          ? r.students
+              .filter((st: unknown) => st !== null && st !== undefined)
+              .map((st: any) =>
+                typeof st === 'string'
+                  ? { name: st, photoUrl: '' }
+                  : { name: String(st?.name ?? ''), photoUrl: String(st?.photoUrl ?? '') }
+              )
+          : [],
+        coaches: Array.isArray(r.coaches)
+          ? r.coaches
+              .filter((c: unknown) => typeof c === 'string' || isPlainRecord(c))
+              .map((c: unknown): CoachEntry =>
+                typeof c === 'string'
+                  ? c
+                  : {
+                      name: String((c as Record<string, unknown>).name ?? ''),
+                      photoUrl:
+                        typeof (c as Record<string, unknown>).photoUrl === 'string'
+                          ? String((c as Record<string, unknown>).photoUrl)
+                          : ''
+                    }
+              )
+          : [],
+        qualifyingSong: String(r.qualifyingSong ?? ''),
+        finalSong: String(r.finalSong ?? '')
+      }));
+  });
   const [scores, setScores] = useState<ScoresMap>(() =>
-    savedState?.scores && typeof savedState.scores === 'object' ? savedState.scores : INITIAL_SCORES
+    isPlainRecord(savedState?.scores) ? savedState.scores : INITIAL_SCORES
   );
   const [scoreCriteriaDetails, setScoreCriteriaDetails] = useState<ScoreCriteriaDetailsMap>(() =>
-    savedState?.scoreCriteriaDetails && typeof savedState.scoreCriteriaDetails === 'object'
-      ? savedState.scoreCriteriaDetails
-      : INITIAL_SCORE_CRITERIA
+    isPlainRecord(savedState?.scoreCriteriaDetails) ? savedState.scoreCriteriaDetails : INITIAL_SCORE_CRITERIA
   );
   const [evalMeta, setEvalMeta] = useState<EvalMetaMap>(() =>
-    savedState?.evalMeta && typeof savedState.evalMeta === 'object'
-      ? savedState.evalMeta
-      : INITIAL_EVAL_META
+    isPlainRecord(savedState?.evalMeta) ? savedState.evalMeta : INITIAL_EVAL_META
   );
   const [absentRegs, setAbsentRegs] = useState<Record<string, boolean>>(() =>
-    savedState?.absentRegs && typeof savedState.absentRegs === 'object'
-      ? savedState.absentRegs
-      : {}
+    isPlainRecord(savedState?.absentRegs) ? savedState.absentRegs : {}
   );
 
   // ---------------- UI Filters & Modals ----------------
   const [toast, setToast] = useState<ToastState | null>(null);
   const [closedMenuModal, setClosedMenuModal] = useState<ClosedMenuModalState | null>(null);
   const [customCriteriaByComp, setCustomCriteriaByComp] = useState<Record<string, CriterionItem[]>>(() => {
-    if (savedState?.customCriteriaByComp && typeof savedState.customCriteriaByComp === 'object') {
-      return savedState.customCriteriaByComp;
-    }
     const initialMap: Record<string, CriterionItem[]> = {};
+    const savedCriteria = isPlainRecord(savedState?.customCriteriaByComp)
+      ? savedState.customCriteriaByComp
+      : null;
     COMPETITIONS.forEach((comp) => {
-      initialMap[comp.id] =
-        comp.id === 'comp-7'
-          ? []
-          : getCompetitionCriteria(comp.id, null).map((c) => ({
-              key: c.key,
-              label: c.label,
-              max: c.max,
-              maxLabel: c.maxLabel || `${c.max} คะแนน`
-            }));
+      if (savedCriteria && Array.isArray(savedCriteria[comp.id])) {
+        initialMap[comp.id] = savedCriteria[comp.id];
+      } else {
+        initialMap[comp.id] =
+          comp.id === 'comp-7'
+            ? []
+            : getCompetitionCriteria(comp.id, null).map((c) => ({
+                key: c.key,
+                label: c.label,
+                max: c.max,
+                maxLabel: c.maxLabel || `${c.max} คะแนน`
+              }));
+      }
     });
     return initialMap;
   });
@@ -4842,8 +4903,11 @@ export default function App() {
 
   const renderHomePage = () => {
     const totalTeams = registrations.length;
-    const totalStudents = registrations.reduce((sum, r) => sum + r.students.length, 0);
-    const approvedCount = Object.values(evalMeta).filter((m) => m.approved).length;
+    const totalStudents = registrations.reduce(
+      (sum, r) => sum + (Array.isArray(r?.students) ? r.students.length : 0),
+      0
+    );
+    const approvedCount = Object.values(evalMeta).filter((m) => Boolean(m && m.approved)).length;
 
     const safeBannerBg = safeImageUrl(bannerBgUrl);
 

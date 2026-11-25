@@ -24,7 +24,7 @@
         var root = document.getElementById('root');
         if (root && root.children.length > 0) return;
 
-        fetch('./dist/index.html')
+        fetch('./dist/index.html', { cache: 'no-store' })
           .then(function (res) {
             if (!res.ok) throw new Error('missing');
             return res.text();
@@ -56,10 +56,10 @@
       }
       setTimeout(function () {
         var root = document.getElementById('root');
-        if (root && root.children.length === 0) {
+        if (root && root.children.length === 0 && window.location.protocol === 'file:') {
           __handleUnbuiltEntryError();
         }
-      }, 2500);
+      }, 1500);
     </script>
     <script type="module" src="/src/main.tsx" onerror="__handleUnbuiltEntryError()"></script>
   </body>

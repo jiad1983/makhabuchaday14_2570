@@ -1,0 +1,949 @@
+<?php
+declare(strict_types=1);
+
+require_once __DIR__ . '/config.php';
+
+startAppSession();
+
+header('Content-Type: application/json; charset=utf-8');
+header('X-Content-Type-Options: nosniff');
+header('Cache-Control: no-store, no-cache, must-revalidate');
+
+function jsonResponse(int $statusCode, array $data): void
+{
+    http_response_code($statusCode);
+    echo json_encode($data, JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+function getJsonBody(): array
+{
+    $raw = file_get_contents('php://input');
+    if ($raw === false || trim($raw) === '') {
+        return [];
+    }
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : [];
+}
+
+function verifyCsrf(): void
+{
+    $headerToken = (string)($_SERVER['HTTP_X_CSRF_TOKEN'] ?? '');
+    $sessionToken = (string)($_SESSION['csrf_token'] ?? '');
+    if ($headerToken === '' || $sessionToken === '' || !hash_equals($sessionToken, $headerToken)) {
+        jsonResponse(403, ['ok' => false, 'error' => 'Session หมดอายุหรือไม่ถูกต้อง กรุณารีเฟรชหน้าเว็บแล้วลองใหม่อีกครั้ง']);
+    }
+}
+
+function currentRole(): string
+{
+    return (string)($_SESSION['auth']['role'] ?? 'guest');
+}
+
+function requireRoles(array $allowedRoles): void
+{
+    if (!in_array(currentRole(), $allowedRoles, true)) {
+        jsonResponse(403, ['ok' => false, 'error' => 'ท่านไม่มีสิทธิ์ดำเนินการในส่วนนี้ กรุณาเข้าสู่ระบบด้วยสิทธิ์ที่เหมาะสม']);
+    }
+}
+
+function findCompetition(string $compId): ?array
+{
+    foreach (getCompetitions() as $comp) {
+        if ($comp['id'] === $compId) {
+            return $comp;
+        }
+    }
+    return null;
+}
+
+function saveValidatedImageDataUrl(string $dataUrl, string $prefix = 'img'): string
+{
+    $trimmed = trim($dataUrl);
+    if ($trimmed === '') {
+        return '';
+    }
+    // Already a safe local uploads path
+    if (preg_match('/^uploads\/[a-zA-Z0-9_\-]+\.(png|jpg|jpeg|gif|webp)$/i', $trimmed)) {
+        return $trimmed;
+    }
+    if (!preg_match('/^data:image\/(png|jpeg|jpg|gif|webp);base64,([A-Za-z0-9+\/=]+)$/i', $trimmed, $matches)) {
+        return '';
+    }
+    $binary = base64_decode($matches[2], true);
+    if ($binary === false || strlen($binary) === 0 || strlen($binary) > 6 * 1024 * 1024) {
+        return '';
+    }
+    $info = @getimagesizefromstring($binary);
+    if ($info === false || empty($info['mime'])) {
+        return '';
+    }
+    $mimeToExt = [
+        'image/png' => 'png',
+        'image/jpeg' => 'jpg',
+        'image/gif' => 'gif',
+        'image/webp' => 'webp',
+    ];
+    $ext = $mimeToExt[$info['mime']] ?? '';
+    if ($ext === '') {
+        return '';
+    }
+
+    ensureStorageDirs();
+    $safePrefix = preg_replace('/[^a-z0-9_\-]/i', '', $prefix) ?: 'img';
+    $filename = $safePrefix . '_' . bin2hex(random_bytes(8)) . '.' . $ext;
+    $targetPath = UPLOADS_DIR . DIRECTORY_SEPARATOR . $filename;
+    if (@file_put_contents($targetPath, $binary, LOCK_EX) === false) {
+        return '';
+    }
+    return 'uploads/' . $filename;
+}
+
+function deleteLocalUploadIfUnused(string $path, array $db): void
+{
+    if (!preg_match('/^uploads\/([a-zA-Z0-9_\-]+\.(png|jpg|jpeg|gif|webp))$/i', $path, $m)) {
+        return;
+    }
+    $encoded = json_encode($db, JSON_UNESCAPED_UNICODE);
+    if ($encoded !== false && strpos($encoded, $path) !== false) {
+        return;
+    }
+    $full = realpath(UPLOADS_DIR . DIRECTORY_SEPARATOR . basename($m[1]));
+    $baseReal = realpath(UPLOADS_DIR);
+    if ($full !== false && $baseReal !== false && strpos($full, $baseReal . DIRECTORY_SEPARATOR) === 0 && is_file($full)) {
+        @unlink($full);
+    }
+}
+
+function safeStrLen(string $val): int
+{
+    return function_exists('mb_strlen') ? mb_strlen($val, 'UTF-8') : strlen($val);
+}
+
+function collectRegUploadPaths(array $reg): array
+{
+    $paths = [];
+    foreach ($reg['students'] ?? [] as $s) {
+        if (!empty($s['photoUrl']) && is_string($s['photoUrl'])) {
+            $paths[] = $s['photoUrl'];
+        }
+    }
+    foreach ($reg['coaches'] ?? [] as $c) {
+        if (is_array($c) && !empty($c['photoUrl']) && is_string($c['photoUrl'])) {
+            $paths[] = $c['photoUrl'];
+        }
+    }
+    return $paths;
+}
+
+$action = (string)($_GET['action'] ?? '');
+$method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+
+$db = loadDb();
+
+if ($method === 'GET' && ($action === 'bootstrap' || $action === '')) {
+    jsonResponse(200, ['ok' => true, 'state' => buildClientPayload($db, $_SESSION['auth'])]);
+}
+
+if ($method !== 'POST') {
+    jsonResponse(405, ['ok' => false, 'error' => 'Method not allowed']);
+}
+
+verifyCsrf();
+$body = getJsonBody();
+
+switch ($action) {
+    case 'login': {
+        $tab = (string)($body['loginTab'] ?? 'school');
+        $username = trim((string)($body['username'] ?? ''));
+        $password = trim((string)($body['password'] ?? ''));
+
+        if ($username === '' || $password === '') {
+            jsonResponse(400, ['ok' => false, 'error' => 'กรุณากรอกชื่อผู้ใช้และรหัสผ่านให้ครบถ้วน']);
+        }
+
+        if ($tab === 'admin') {
+            $adminCred = $db['adminCredentials'] ?? [];
+            $expectedUser = (string)($adminCred['username'] ?? 'admin');
+            $hash = (string)($adminCred['passwordHash'] ?? '');
+            $legacyPass = (string)($adminCred['password'] ?? '');
+            $passOk = ($hash !== '' && password_verify($password, $hash))
+                || ($legacyPass !== '' && hash_equals($legacyPass, $password));
+
+            if ($username === $expectedUser && $passOk) {
+                session_regenerate_id(true);
+                $_SESSION['auth'] = [
+                    'role' => 'admin',
+                    'userId' => 'admin-01',
+                    'displayName' => (string)($adminCred['displayName'] ?? 'พระบุญทัน ธมฺมธาตา (Admin)'),
+                    'schoolId' => null,
+                    'judgeId' => null,
+                ];
+                jsonResponse(200, [
+                    'ok' => true,
+                    'message' => 'เข้าสู่ระบบผู้ดูแลระบบสำเร็จ (' . $_SESSION['auth']['displayName'] . ')',
+                    'state' => buildClientPayload($db, $_SESSION['auth']),
+                ]);
+            }
+            jsonResponse(401, ['ok' => false, 'error' => 'ชื่อผู้ใช้หรือรหัสผ่านผู้ดูแลระบบไม่ถูกต้อง']);
+        }
+
+        if ($tab === 'school') {
+            $matched = null;
+            foreach ($db['schools'] as $sch) {
+                if (trim((string)($sch['schoolCode'] ?? '')) === $username) {
+                    $hash = (string)($sch['passwordHash'] ?? '');
+                    $legacyPass = (string)($sch['password'] ?? '');
+                    $ok = ($hash !== '' && password_verify($password, $hash))
+                        || ($legacyPass !== '' && hash_equals($legacyPass, $password));
+                    if ($ok) {
+                        $matched = $sch;
+                        break;
+                    }
+                }
+            }
+            if ($matched) {
+                session_regenerate_id(true);
+                $_SESSION['auth'] = [
+                    'role' => 'school',
+                    'userId' => (string)$matched['id'],
+                    'displayName' => (string)$matched['name'],
+                    'schoolId' => (string)$matched['id'],
+                    'judgeId' => null,
+                ];
+                jsonResponse(200, [
+                    'ok' => true,
+                    'message' => 'ยินดีต้อนรับ ' . $matched['name'],
+                    'state' => buildClientPayload($db, $_SESSION['auth']),
+                ]);
+            }
+            jsonResponse(401, ['ok' => false, 'error' => 'รหัสสถานศึกษาหรือรหัสผ่านไม่ถูกต้อง กรุณาตรวจสอบอีกครั้ง']);
+        }
+
+        if ($tab === 'judge') {
+            $matched = null;
+            foreach ($db['judges'] as $jdg) {
+                if (trim((string)($jdg['username'] ?? '')) === $username) {
+                    $hash = (string)($jdg['passwordHash'] ?? '');
+                    $legacyPass = (string)($jdg['password'] ?? '');
+                    $ok = ($hash !== '' && password_verify($password, $hash))
+                        || ($legacyPass !== '' && hash_equals($legacyPass, $password));
+                    if ($ok) {
+                        $matched = $jdg;
+                        break;
+                    }
+                }
+            }
+            if ($matched) {
+                session_regenerate_id(true);
+                $_SESSION['auth'] = [
+                    'role' => 'judge',
+                    'userId' => (string)$matched['id'],
+                    'displayName' => (string)$matched['name'],
+                    'schoolId' => null,
+                    'judgeId' => (string)$matched['id'],
+                ];
+                jsonResponse(200, [
+                    'ok' => true,
+                    'message' => 'เข้าสู่ระบบกรรมการตัดสิน: ' . $matched['name'],
+                    'state' => buildClientPayload($db, $_SESSION['auth']),
+                ]);
+            }
+            jsonResponse(401, ['ok' => false, 'error' => 'Username หรือ Password ของกรรมการไม่ถูกต้อง']);
+        }
+
+        jsonResponse(400, ['ok' => false, 'error' => 'ประเภทการเข้าสู่ระบบไม่ถูกต้อง']);
+    }
+
+    case 'school_signup': {
+        $code = trim((string)($body['schoolCode'] ?? ''));
+        $name = trim((string)($body['name'] ?? ''));
+        $director = trim((string)($body['director'] ?? ''));
+        $phone = trim((string)($body['phone'] ?? ''));
+        $password = trim((string)($body['password'] ?? ''));
+
+        if ($code === '' || $name === '' || $director === '' || $password === '') {
+            jsonResponse(400, ['ok' => false, 'error' => 'กรุณากรอกข้อมูลโรงเรียนให้ครบถ้วน']);
+        }
+        if (safeStrLen($password) < 4) {
+            jsonResponse(400, ['ok' => false, 'error' => 'กรุณากำหนดรหัสผ่านอย่างน้อย 4 ตัวอักษร']);
+        }
+        foreach ($db['schools'] as $sch) {
+            if (trim((string)($sch['schoolCode'] ?? '')) === $code) {
+                jsonResponse(409, ['ok' => false, 'error' => 'รหัสสถานศึกษานี้มีในระบบแล้ว (จำกัดโรงเรียนละ ๑ User)']);
+            }
+        }
+
+        $safeCodeSlug = preg_replace('/[^a-zA-Z0-9_\-]/', '', $code) ?: bin2hex(random_bytes(3));
+        $newSchool = [
+            'id' => 'sch-' . $safeCodeSlug . '-' . time(),
+            'schoolCode' => $code,
+            'passwordHash' => password_hash($password, PASSWORD_DEFAULT),
+            'name' => $name,
+            'director' => $director,
+            'phone' => $phone,
+        ];
+        $db['schools'][] = $newSchool;
+        saveDb($db);
+
+        session_regenerate_id(true);
+        $_SESSION['auth'] = [
+            'role' => 'school',
+            'userId' => $newSchool['id'],
+            'displayName' => $newSchool['name'],
+            'schoolId' => $newSchool['id'],
+            'judgeId' => null,
+        ];
+
+        jsonResponse(200, [
+            'ok' => true,
+            'message' => 'สมัครสมาชิกโรงเรียน ' . $name . ' และเข้าสู่ระบบเรียบร้อยแล้ว',
+            'state' => buildClientPayload($db, $_SESSION['auth']),
+        ]);
+    }
+
+    case 'logout': {
+        session_regenerate_id(true);
+        $_SESSION['auth'] = [
+            'role' => 'guest',
+            'userId' => null,
+            'displayName' => 'ผู้เยี่ยมชมทั่วไป',
+            'schoolId' => null,
+            'judgeId' => null,
+        ];
+        jsonResponse(200, [
+            'ok' => true,
+            'message' => 'ออกจากระบบเรียบร้อยแล้ว',
+            'state' => buildClientPayload($db, $_SESSION['auth']),
+        ]);
+    }
+
+    case 'save_registration': {
+        requireRoles(['admin', 'school']);
+        $role = currentRole();
+        if ($role === 'school' && empty($db['registrationOpen'])) {
+            jsonResponse(403, ['ok' => false, 'error' => 'ขณะนี้ระบบปิดรับสมัครแข่งขันแล้ว']);
+        }
+
+        $editingId = isset($body['id']) && is_string($body['id']) && trim($body['id']) !== ''
+            ? trim($body['id'])
+            : null;
+        $schoolId = $role === 'school'
+            ? (string)($_SESSION['auth']['schoolId'] ?? '')
+            : trim((string)($body['schoolId'] ?? ''));
+        $compId = trim((string)($body['competitionId'] ?? ''));
+        $level = trim((string)($body['level'] ?? ''));
+
+        $comp = findCompetition($compId);
+        if (!$comp || !in_array($level, $comp['levels'], true)) {
+            jsonResponse(400, ['ok' => false, 'error' => 'รายการแข่งขันหรือระดับชั้นไม่ถูกต้อง']);
+        }
+
+        $schoolExists = false;
+        foreach ($db['schools'] as $sch) {
+            if (($sch['id'] ?? '') === $schoolId) {
+                $schoolExists = true;
+                break;
+            }
+        }
+        if (!$schoolExists) {
+            jsonResponse(400, ['ok' => false, 'error' => 'ไม่พบข้อมูลโรงเรียนที่เลือก']);
+        }
+
+        $rawStudents = is_array($body['students'] ?? null) ? $body['students'] : [];
+        $students = [];
+        foreach ($rawStudents as $st) {
+            if (!is_array($st)) {
+                continue;
+            }
+            $stName = trim((string)($st['name'] ?? ''));
+            if ($stName === '') {
+                continue;
+            }
+            $photo = saveValidatedImageDataUrl((string)($st['photoUrl'] ?? ''), 'stu');
+            $students[] = ['name' => $stName, 'photoUrl' => $photo];
+        }
+        if (count($students) === 0 || count($students) > (int)$comp['teamSize']) {
+            jsonResponse(400, ['ok' => false, 'error' => 'กรุณากรอกรายชื่อผู้เข้าแข่งขันให้ถูกต้องตามจำนวนสมาชิก (' . $comp['type'] . ')']);
+        }
+
+        $rawCoaches = is_array($body['coaches'] ?? null) ? $body['coaches'] : [];
+        $coaches = [];
+        foreach ($rawCoaches as $c) {
+            $cName = is_string($c) ? trim($c) : trim((string)($c['name'] ?? ''));
+            if ($cName === '') {
+                continue;
+            }
+            $cPhoto = is_array($c) ? saveValidatedImageDataUrl((string)($c['photoUrl'] ?? ''), 'coach') : '';
+            $coaches[] = ['name' => $cName, 'photoUrl' => $cPhoto];
+        }
+        if (count($coaches) === 0 || count($coaches) > 3) {
+            jsonResponse(400, ['ok' => false, 'error' => 'กรุณากรอกรายชื่อครูผู้ฝึกสอน 1-3 ท่าน']);
+        }
+
+        $qSong = trim((string)($body['qualifyingSong'] ?? ''));
+        $fSong = trim((string)($body['finalSong'] ?? ''));
+        if (!empty($comp['requiresSongs']) && ($qSong === '' || $fSong === '')) {
+            jsonResponse(400, ['ok' => false, 'error' => 'รายการเพลงไทยลูกทุ่งต้องระบุชื่อเพลงรอบคัดเลือกและรอบตัดสิน']);
+        }
+
+        // Duplicate check per school + competition + level
+        foreach ($db['registrations'] as $existing) {
+            if (
+                ($existing['id'] ?? '') !== $editingId
+                && ($existing['schoolId'] ?? '') === $schoolId
+                && ($existing['competitionId'] ?? '') === $compId
+                && ($existing['level'] ?? '') === $level
+            ) {
+                jsonResponse(409, ['ok' => false, 'error' => 'โรงเรียนนี้สมัครกิจกรรม "' . $comp['name'] . '" ระดับ "' . $level . '" ไปแล้ว']);
+            }
+        }
+
+        $removedUploads = [];
+        if ($editingId !== null) {
+            $updated = false;
+            foreach ($db['registrations'] as $idx => $existing) {
+                if (($existing['id'] ?? '') === $editingId) {
+                    if ($role === 'school' && ($existing['schoolId'] ?? '') !== $schoolId) {
+                        jsonResponse(403, ['ok' => false, 'error' => 'ไม่สามารถแก้ไขรายการของโรงเรียนอื่นได้']);
+                    }
+                    $removedUploads = collectRegUploadPaths($existing);
+                    $db['registrations'][$idx] = [
+                        'id' => $editingId,
+                        'schoolId' => $schoolId,
+                        'competitionId' => $compId,
+                        'level' => $level,
+                        'students' => $students,
+                        'coaches' => $coaches,
+                        'qualifyingSong' => $comp['requiresSongs'] ? $qSong : '',
+                        'finalSong' => $comp['requiresSongs'] ? $fSong : '',
+                    ];
+                    $updated = true;
+                    break;
+                }
+            }
+            if (!$updated) {
+                jsonResponse(404, ['ok' => false, 'error' => 'ไม่พบรายการสมัครที่ต้องการแก้ไข']);
+            }
+            $msg = 'บันทึกการแก้ไขข้อมูลการสมัครเรียบร้อยแล้ว';
+        } else {
+            $db['registrations'][] = [
+                'id' => 'reg-' . bin2hex(random_bytes(5)),
+                'schoolId' => $schoolId,
+                'competitionId' => $compId,
+                'level' => $level,
+                'students' => $students,
+                'coaches' => $coaches,
+                'qualifyingSong' => $comp['requiresSongs'] ? $qSong : '',
+                'finalSong' => $comp['requiresSongs'] ? $fSong : '',
+            ];
+            $msg = 'ลงทะเบียนเข้าร่วมการแข่งขันเรียบร้อยแล้ว';
+        }
+
+        saveDb($db);
+        foreach ($removedUploads as $oldPath) {
+            deleteLocalUploadIfUnused($oldPath, $db);
+        }
+        jsonResponse(200, ['ok' => true, 'message' => $msg, 'state' => buildClientPayload($db, $_SESSION['auth'])]);
+    }
+
+    case 'delete_registration': {
+        requireRoles(['admin', 'school']);
+        $role = currentRole();
+        if ($role === 'school' && empty($db['registrationOpen'])) {
+            jsonResponse(403, ['ok' => false, 'error' => 'ขณะนี้ระบบปิดรับสมัครแข่งขันแล้ว']);
+        }
+        $regId = trim((string)($body['id'] ?? ''));
+        $foundIndex = null;
+        $removedUploads = [];
+        foreach ($db['registrations'] as $idx => $r) {
+            if (($r['id'] ?? '') === $regId) {
+                if ($role === 'school' && ($r['schoolId'] ?? '') !== ($_SESSION['auth']['schoolId'] ?? '')) {
+                    jsonResponse(403, ['ok' => false, 'error' => 'ไม่สามารถลบรายการของโรงเรียนอื่นได้']);
+                }
+                $foundIndex = $idx;
+                $removedUploads = collectRegUploadPaths($r);
+                break;
+            }
+        }
+        if ($foundIndex === null) {
+            jsonResponse(404, ['ok' => false, 'error' => 'ไม่พบรายการสมัครที่ต้องการลบ']);
+        }
+        array_splice($db['registrations'], $foundIndex, 1);
+        unset($db['scores'][$regId], $db['scoreCriteriaDetails'][$regId], $db['absentRegs'][$regId]);
+        saveDb($db);
+        foreach ($removedUploads as $oldPath) {
+            deleteLocalUploadIfUnused($oldPath, $db);
+        }
+        jsonResponse(200, [
+            'ok' => true,
+            'message' => 'ลบรายการสมัครแข่งขันเรียบร้อยแล้ว',
+            'state' => buildClientPayload($db, $_SESSION['auth']),
+        ]);
+    }
+
+    case 'save_schedule': {
+        requireRoles(['admin']);
+        $key = trim((string)($body['key'] ?? ''));
+        $venue = trim((string)($body['venue'] ?? ''));
+        $dateLabel = trim((string)($body['dateLabel'] ?? EVENT_DATE_TH));
+        $timeRange = trim((string)($body['timeRange'] ?? ''));
+        $notes = trim((string)($body['notes'] ?? ''));
+        if ($key === '') {
+            jsonResponse(400, ['ok' => false, 'error' => 'ไม่พบรายการตารางแข่งขัน']);
+        }
+        $db['schedules'][$key] = [
+            'venue' => $venue !== '' ? $venue : 'กำหนดในวันงาน',
+            'dateLabel' => $dateLabel !== '' ? $dateLabel : EVENT_DATE_TH,
+            'timeRange' => $timeRange !== '' ? $timeRange : '08.30 น. เป็นต้นไป',
+            'notes' => $notes,
+        ];
+        saveDb($db);
+        jsonResponse(200, [
+            'ok' => true,
+            'message' => 'บันทึกข้อมูลตารางการแข่งขันเรียบร้อยแล้ว',
+            'state' => buildClientPayload($db, $_SESSION['auth']),
+        ]);
+    }
+
+    case 'save_criteria': {
+        requireRoles(['admin']);
+        $compId = trim((string)($body['competitionId'] ?? ''));
+        if (!findCompetition($compId)) {
+            jsonResponse(400, ['ok' => false, 'error' => 'ไม่พบรายการแข่งขัน']);
+        }
+        $items = is_array($body['criteria'] ?? null) ? $body['criteria'] : [];
+        $cleaned = [];
+        foreach ($items as $idx => $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $label = trim((string)($item['label'] ?? ''));
+            $max = (float)($item['max'] ?? 0);
+            if ($label === '' || $max <= 0) {
+                continue;
+            }
+            $key = trim((string)($item['key'] ?? ''));
+            if ($key === '') {
+                $key = 'crit_' . ($idx + 1) . '_' . bin2hex(random_bytes(3));
+            }
+            $cleaned[] = [
+                'key' => $key,
+                'label' => $label,
+                'max' => $max,
+                'maxLabel' => $max . ' คะแนน',
+            ];
+        }
+        $db['customCriteriaByComp'][$compId] = $cleaned;
+        saveDb($db);
+        jsonResponse(200, [
+            'ok' => true,
+            'message' => 'บันทึกเกณฑ์การให้คะแนนเรียบร้อยแล้ว',
+            'state' => buildClientPayload($db, $_SESSION['auth']),
+        ]);
+    }
+
+    case 'reset_criteria': {
+        requireRoles(['admin']);
+        $compId = trim((string)($body['competitionId'] ?? ''));
+        if (!findCompetition($compId)) {
+            jsonResponse(400, ['ok' => false, 'error' => 'ไม่พบรายการแข่งขัน']);
+        }
+        $db['customCriteriaByComp'][$compId] = getDefaultCompetitionCriteria($compId);
+        saveDb($db);
+        jsonResponse(200, [
+            'ok' => true,
+            'message' => 'คืนค่าเกณฑ์การให้คะแนนมาตรฐานเรียบร้อยแล้ว',
+            'state' => buildClientPayload($db, $_SESSION['auth']),
+        ]);
+    }
+
+    case 'save_admin_school': {
+        requireRoles(['admin']);
+        $id = isset($body['id']) && is_string($body['id']) && trim($body['id']) !== '' ? trim($body['id']) : null;
+        $code = trim((string)($body['schoolCode'] ?? ''));
+        $name = trim((string)($body['name'] ?? ''));
+        $director = trim((string)($body['director'] ?? ''));
+        $phone = trim((string)($body['phone'] ?? ''));
+        $password = trim((string)($body['password'] ?? ''));
+
+        if ($code === '' || $name === '' || $director === '') {
+            jsonResponse(400, ['ok' => false, 'error' => 'กรุณากรอกข้อมูลโรงเรียนให้ครบถ้วน']);
+        }
+        foreach ($db['schools'] as $sch) {
+            if (($sch['id'] ?? '') !== $id && trim((string)($sch['schoolCode'] ?? '')) === $code) {
+                jsonResponse(409, ['ok' => false, 'error' => 'รหัสสถานศึกษานี้มีในระบบแล้ว']);
+            }
+        }
+        if ($id !== null) {
+            $updated = false;
+            foreach ($db['schools'] as $idx => $sch) {
+                if (($sch['id'] ?? '') === $id) {
+                    $db['schools'][$idx]['schoolCode'] = $code;
+                    $db['schools'][$idx]['name'] = $name;
+                    $db['schools'][$idx]['director'] = $director;
+                    $db['schools'][$idx]['phone'] = $phone;
+                    if ($password !== '') {
+                        $db['schools'][$idx]['passwordHash'] = password_hash($password, PASSWORD_DEFAULT);
+                        unset($db['schools'][$idx]['password']);
+                    }
+                    $updated = true;
+                    break;
+                }
+            }
+            if (!$updated) {
+                jsonResponse(404, ['ok' => false, 'error' => 'ไม่พบข้อมูลโรงเรียน']);
+            }
+            $msg = 'อัปเดตข้อมูลโรงเรียนเรียบร้อยแล้ว';
+        } else {
+            if ($password === '') {
+                $password = '1234';
+            }
+            $safeCodeSlug = preg_replace('/[^a-zA-Z0-9_\-]/', '', $code) ?: bin2hex(random_bytes(3));
+            $db['schools'][] = [
+                'id' => 'sch-' . $safeCodeSlug . '-' . time(),
+                'schoolCode' => $code,
+                'passwordHash' => password_hash($password, PASSWORD_DEFAULT),
+                'name' => $name,
+                'director' => $director,
+                'phone' => $phone,
+            ];
+            $msg = 'เพิ่มข้อมูลโรงเรียนเรียบร้อยแล้ว';
+        }
+        saveDb($db);
+        jsonResponse(200, ['ok' => true, 'message' => $msg, 'state' => buildClientPayload($db, $_SESSION['auth'])]);
+    }
+
+    case 'delete_admin_school': {
+        requireRoles(['admin']);
+        $id = trim((string)($body['id'] ?? ''));
+        $before = count($db['schools']);
+        $db['schools'] = array_values(array_filter($db['schools'], static function ($s) use ($id) {
+            return ($s['id'] ?? '') !== $id;
+        }));
+        if (count($db['schools']) === $before) {
+            jsonResponse(404, ['ok' => false, 'error' => 'ไม่พบข้อมูลโรงเรียน']);
+        }
+        $removedRegIds = [];
+        $db['registrations'] = array_values(array_filter($db['registrations'], static function ($r) use ($id, &$removedRegIds) {
+            if (($r['schoolId'] ?? '') === $id) {
+                $removedRegIds[] = (string)($r['id'] ?? '');
+                return false;
+            }
+            return true;
+        }));
+        foreach ($removedRegIds as $rId) {
+            unset($db['scores'][$rId], $db['scoreCriteriaDetails'][$rId], $db['absentRegs'][$rId]);
+        }
+        saveDb($db);
+        jsonResponse(200, ['ok' => true, 'message' => 'ลบโรงเรียนเรียบร้อยแล้ว', 'state' => buildClientPayload($db, $_SESSION['auth'])]);
+    }
+
+    case 'save_admin_judge': {
+        requireRoles(['admin']);
+        $id = isset($body['id']) && is_string($body['id']) && trim($body['id']) !== '' ? trim($body['id']) : null;
+        $username = trim((string)($body['username'] ?? ''));
+        $password = trim((string)($body['password'] ?? ''));
+        $name = trim((string)($body['name'] ?? ''));
+        $position = trim((string)($body['position'] ?? 'กรรมการตัดสิน')) ?: 'กรรมการตัดสิน';
+        $compId = trim((string)($body['competitionId'] ?? 'comp-1'));
+        $level = trim((string)($body['level'] ?? ''));
+        $photoUrl = saveValidatedImageDataUrl((string)($body['photoUrl'] ?? ''), 'jdg');
+
+        $comp = findCompetition($compId);
+        if (!$comp || !in_array($level, $comp['levels'], true)) {
+            jsonResponse(400, ['ok' => false, 'error' => 'รายการแข่งขันหรือระดับชั้นไม่ถูกต้อง']);
+        }
+        if ($username === '' || $name === '') {
+            jsonResponse(400, ['ok' => false, 'error' => 'กรุณากรอก Username และชื่อ-นามสกุลกรรมการ']);
+        }
+        foreach ($db['judges'] as $jdg) {
+            if (($jdg['id'] ?? '') !== $id && trim((string)($jdg['username'] ?? '')) === $username) {
+                jsonResponse(409, ['ok' => false, 'error' => 'Username กรรมการนี้มีอยู่ในระบบแล้ว']);
+            }
+        }
+        $oldJudgePhoto = '';
+        if ($id !== null) {
+            $updated = false;
+            foreach ($db['judges'] as $idx => $jdg) {
+                if (($jdg['id'] ?? '') === $id) {
+                    $oldJudgePhoto = (string)($jdg['photoUrl'] ?? '');
+                    $db['judges'][$idx]['username'] = $username;
+                    $db['judges'][$idx]['name'] = $name;
+                    $db['judges'][$idx]['position'] = $position;
+                    $db['judges'][$idx]['competitionId'] = $compId;
+                    $db['judges'][$idx]['level'] = $level;
+                    $db['judges'][$idx]['photoUrl'] = $photoUrl;
+                    if ($password !== '') {
+                        $db['judges'][$idx]['passwordHash'] = password_hash($password, PASSWORD_DEFAULT);
+                        unset($db['judges'][$idx]['password']);
+                    }
+                    $updated = true;
+                    break;
+                }
+            }
+            if (!$updated) {
+                jsonResponse(404, ['ok' => false, 'error' => 'ไม่พบข้อมูลกรรมการ']);
+            }
+            $msg = 'อัปเดตข้อมูลกรรมการตัดสินเรียบร้อยแล้ว';
+        } else {
+            if ($password === '') {
+                $password = '1234';
+            }
+            $db['judges'][] = [
+                'id' => 'jdg-' . bin2hex(random_bytes(4)),
+                'username' => $username,
+                'passwordHash' => password_hash($password, PASSWORD_DEFAULT),
+                'name' => $name,
+                'position' => $position,
+                'competitionId' => $compId,
+                'level' => $level,
+                'photoUrl' => $photoUrl,
+            ];
+            $msg = 'เพิ่มกรรมการตัดสินเรียบร้อยแล้ว';
+        }
+        saveDb($db);
+        if ($oldJudgePhoto !== '' && $oldJudgePhoto !== $photoUrl) {
+            deleteLocalUploadIfUnused($oldJudgePhoto, $db);
+        }
+        jsonResponse(200, ['ok' => true, 'message' => $msg, 'state' => buildClientPayload($db, $_SESSION['auth'])]);
+    }
+
+    case 'delete_admin_judge': {
+        requireRoles(['admin']);
+        $id = trim((string)($body['id'] ?? ''));
+        $before = count($db['judges']);
+        $removedPhoto = '';
+        $db['judges'] = array_values(array_filter($db['judges'], static function ($j) use ($id, &$removedPhoto) {
+            if (($j['id'] ?? '') === $id) {
+                $removedPhoto = (string)($j['photoUrl'] ?? '');
+                return false;
+            }
+            return true;
+        }));
+        if (count($db['judges']) === $before) {
+            jsonResponse(404, ['ok' => false, 'error' => 'ไม่พบข้อมูลกรรมการ']);
+        }
+        saveDb($db);
+        if ($removedPhoto !== '') {
+            deleteLocalUploadIfUnused($removedPhoto, $db);
+        }
+        jsonResponse(200, ['ok' => true, 'message' => 'ลบกรรมการตัดสินเรียบร้อยแล้ว', 'state' => buildClientPayload($db, $_SESSION['auth'])]);
+    }
+
+    case 'save_admin_settings': {
+        requireRoles(['admin']);
+        if (isset($body['registrationOpen'])) {
+            $db['registrationOpen'] = (bool)$body['registrationOpen'];
+        }
+        if (isset($body['menuPermissions']) && is_array($body['menuPermissions'])) {
+            foreach ($body['menuPermissions'] as $k => $v) {
+                if (isset($db['menuPermissions'][$k])) {
+                    $db['menuPermissions'][$k] = (bool)$v;
+                }
+            }
+        }
+        if (isset($body['adminCredentials']) && is_array($body['adminCredentials'])) {
+            $c = $body['adminCredentials'];
+            $curPass = trim((string)($c['currentPass'] ?? ''));
+            $newUser = trim((string)($c['newUsername'] ?? ''));
+            $newDisplay = trim((string)($c['newDisplayName'] ?? ''));
+            $newPass = trim((string)($c['newPass'] ?? ''));
+            $hash = (string)($db['adminCredentials']['passwordHash'] ?? '');
+            $legacyPass = (string)($db['adminCredentials']['password'] ?? '');
+            $curOk = ($hash !== '' && password_verify($curPass, $hash))
+                || ($legacyPass !== '' && hash_equals($legacyPass, $curPass));
+
+            if (!$curOk) {
+                jsonResponse(400, ['ok' => false, 'error' => 'รหัสผ่านปัจจุบันไม่ถูกต้อง']);
+            }
+            if ($newUser === '') {
+                jsonResponse(400, ['ok' => false, 'error' => 'กรุณาระบุชื่อผู้ใช้ใหม่']);
+            }
+            $db['adminCredentials']['username'] = $newUser;
+            if ($newDisplay !== '') {
+                $db['adminCredentials']['displayName'] = $newDisplay;
+                $_SESSION['auth']['displayName'] = $newDisplay;
+            }
+            if ($newPass !== '') {
+                if (safeStrLen($newPass) < 4) {
+                    jsonResponse(400, ['ok' => false, 'error' => 'รหัสผ่านใหม่ต้องมีอย่างน้อย 4 ตัวอักษร']);
+                }
+                $db['adminCredentials']['passwordHash'] = password_hash($newPass, PASSWORD_DEFAULT);
+                unset($db['adminCredentials']['password']);
+            }
+        }
+        saveDb($db);
+        jsonResponse(200, [
+            'ok' => true,
+            'message' => 'บันทึกการตั้งค่าระบบเรียบร้อยแล้ว',
+            'state' => buildClientPayload($db, $_SESSION['auth']),
+        ]);
+    }
+
+    case 'save_background': {
+        requireRoles(['admin']);
+        $key = trim((string)($body['key'] ?? ''));
+        $allowedKeys = ['bannerBgUrl', 'studentCardBgUrl', 'coachCardBgUrl', 'judgeCardBgUrl', 'certBgUrl'];
+        if (!in_array($key, $allowedKeys, true)) {
+            jsonResponse(400, ['ok' => false, 'error' => 'ประเภทพื้นหลังไม่ถูกต้อง']);
+        }
+        $dataUrl = (string)($body['dataUrl'] ?? '');
+        $oldUrl = (string)($db['backgrounds'][$key] ?? '');
+        if ($dataUrl === '') {
+            $db['backgrounds'][$key] = '';
+            saveDb($db);
+            deleteLocalUploadIfUnused($oldUrl, $db);
+            jsonResponse(200, ['ok' => true, 'message' => 'ลบรูปภาพพื้นหลังเรียบร้อยแล้ว', 'state' => buildClientPayload($db, $_SESSION['auth'])]);
+        }
+        $savedPath = saveValidatedImageDataUrl($dataUrl, 'bg_' . $key);
+        if ($savedPath === '') {
+            jsonResponse(400, ['ok' => false, 'error' => 'ไฟล์รูปภาพไม่ถูกต้องหรือมีขนาดใหญ่เกินไป']);
+        }
+        $db['backgrounds'][$key] = $savedPath;
+        saveDb($db);
+        if ($oldUrl !== '' && $oldUrl !== $savedPath) {
+            deleteLocalUploadIfUnused($oldUrl, $db);
+        }
+        jsonResponse(200, ['ok' => true, 'message' => 'อัปโหลดรูปภาพพื้นหลังเรียบร้อยแล้ว', 'state' => buildClientPayload($db, $_SESSION['auth'])]);
+    }
+
+    case 'save_judge_scores': {
+        requireRoles(['judge']);
+        $judgeId = (string)($_SESSION['auth']['judgeId'] ?? '');
+        $judge = null;
+        foreach ($db['judges'] as $jdg) {
+            if (($jdg['id'] ?? '') === $judgeId) {
+                $judge = $jdg;
+                break;
+            }
+        }
+        if (!$judge) {
+            jsonResponse(403, ['ok' => false, 'error' => 'ไม่พบข้อมูลกรรมการ']);
+        }
+
+        $entries = is_array($body['entries'] ?? null) ? $body['entries'] : [];
+        if (count($entries) === 0) {
+            jsonResponse(400, ['ok' => false, 'error' => 'ไม่มีข้อมูลคะแนนที่จะบันทึก']);
+        }
+
+        $compId = (string)$judge['competitionId'];
+        $level = (string)$judge['level'];
+        $criteriaList = ($compId === 'comp-7')
+            ? [['key' => 'correctAnswers', 'label' => 'จำนวนข้อสอบที่ตอบถูกต้อง', 'max' => 100]]
+            : (is_array($db['customCriteriaByComp'][$compId] ?? null) ? $db['customCriteriaByComp'][$compId] : getDefaultCompetitionCriteria($compId));
+
+        $regMap = [];
+        foreach ($db['registrations'] as $r) {
+            $regMap[(string)$r['id']] = $r;
+        }
+
+        foreach ($entries as $entry) {
+            if (!is_array($entry)) {
+                continue;
+            }
+            $regId = trim((string)($entry['registrationId'] ?? ''));
+            $reg = $regMap[$regId] ?? null;
+            if (!$reg || ($reg['competitionId'] ?? '') !== $compId || ($reg['level'] ?? '') !== $level) {
+                continue;
+            }
+            if (!empty($db['absentRegs'][$regId])) {
+                continue;
+            }
+            $rawCritScores = is_array($entry['criteria'] ?? null) ? $entry['criteria'] : [];
+            $detailOut = [];
+            $total = 0.0;
+            $hasAny = false;
+            foreach ($criteriaList as $crit) {
+                $cKey = (string)$crit['key'];
+                $maxVal = (float)($crit['max'] ?? 100);
+                if (isset($rawCritScores[$cKey]) && $rawCritScores[$cKey] !== '') {
+                    $val = (float)$rawCritScores[$cKey];
+                    if ($val < 0) $val = 0;
+                    if ($val > $maxVal) $val = $maxVal;
+                    $detailOut[$cKey] = round($val, 2);
+                    $total += $detailOut[$cKey];
+                    $hasAny = true;
+                }
+            }
+            if ($hasAny) {
+                if (!isset($db['scores'][$regId]) || !is_array($db['scores'][$regId])) {
+                    $db['scores'][$regId] = [];
+                }
+                if (!isset($db['scoreCriteriaDetails'][$regId]) || !is_array($db['scoreCriteriaDetails'][$regId])) {
+                    $db['scoreCriteriaDetails'][$regId] = [];
+                }
+                $db['scores'][$regId][$judgeId] = round($total, 2);
+                $db['scoreCriteriaDetails'][$regId][$judgeId] = $detailOut;
+            }
+        }
+
+        $metaKey = $compId . '__' . $level;
+        $currentApproved = !empty($db['evalMeta'][$metaKey]['approved']);
+        $db['evalMeta'][$metaKey] = [
+            'status' => 'judging',
+            'approved' => $currentApproved,
+        ];
+        saveDb($db);
+        jsonResponse(200, ['ok' => true, 'message' => 'บันทึกคะแนนตัดสินเรียบร้อยแล้ว', 'state' => buildClientPayload($db, $_SESSION['auth'])]);
+    }
+
+    case 'toggle_absent': {
+        requireRoles(['judge']);
+        $judgeId = (string)($_SESSION['auth']['judgeId'] ?? '');
+        $judge = null;
+        foreach ($db['judges'] as $jdg) {
+            if (($jdg['id'] ?? '') === $judgeId) {
+                $judge = $jdg;
+                break;
+            }
+        }
+        if (!$judge) {
+            jsonResponse(403, ['ok' => false, 'error' => 'ไม่พบข้อมูลกรรมการ']);
+        }
+        $regId = trim((string)($body['registrationId'] ?? ''));
+        $reg = null;
+        foreach ($db['registrations'] as $r) {
+            if (($r['id'] ?? '') === $regId) {
+                $reg = $r;
+                break;
+            }
+        }
+        if (!$reg || ($reg['competitionId'] ?? '') !== ($judge['competitionId'] ?? '') || ($reg['level'] ?? '') !== ($judge['level'] ?? '')) {
+            jsonResponse(403, ['ok' => false, 'error' => 'ท่านไม่มีสิทธิ์ปรับสถานะผู้เข้าแข่งขันรายการนี้']);
+        }
+        $absent = !empty($body['absent']);
+        if ($absent) {
+            $db['absentRegs'][$regId] = true;
+            unset($db['scores'][$regId], $db['scoreCriteriaDetails'][$regId]);
+            $msg = 'บันทึกสถานะไม่เข้าร่วมแข่งขันเรียบร้อยแล้ว';
+        } else {
+            unset($db['absentRegs'][$regId]);
+            $msg = 'ยกเลิกสถานะไม่เข้าร่วมแข่งขันเรียบร้อยแล้ว';
+        }
+        saveDb($db);
+        jsonResponse(200, ['ok' => true, 'message' => $msg, 'state' => buildClientPayload($db, $_SESSION['auth'])]);
+    }
+
+    case 'toggle_approval': {
+        requireRoles(['admin']);
+        $metaKey = trim((string)($body['metaKey'] ?? ''));
+        $approved = !empty($body['approved']);
+        if ($metaKey === '' || strpos($metaKey, '__') === false) {
+            jsonResponse(400, ['ok' => false, 'error' => 'ไม่พบรายการแข่งขันที่ต้องการอนุมัติ']);
+        }
+        $db['evalMeta'][$metaKey] = [
+            'status' => $approved ? 'completed' : 'judging',
+            'approved' => $approved,
+        ];
+        saveDb($db);
+        jsonResponse(200, [
+            'ok' => true,
+            'message' => $approved ? 'อนุมัติผลการแข่งขันเรียบร้อยแล้ว' : 'ยกเลิกการอนุมัติผลการแข่งขันเรียบร้อยแล้ว',
+            'state' => buildClientPayload($db, $_SESSION['auth']),
+        ]);
+    }
+
+    default:
+        jsonResponse(404, ['ok' => false, 'error' => 'ไม่พบคำสั่งที่ร้องขอ']);
+}

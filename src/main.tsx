@@ -77,13 +77,42 @@ if (rootElement) {
     const detail = document.createElement('p');
     detail.style.cssText = 'margin:0;font-size:14px;color:#44403c;word-break:break-word;';
     detail.textContent = msg;
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;';
+    const reloadBtn = document.createElement('button');
+    reloadBtn.type = 'button';
+    reloadBtn.textContent = 'โหลดหน้าใหม่';
+    reloadBtn.style.cssText =
+      'padding:8px 16px;border:none;border-radius:8px;background:#047857;color:#fff;font-size:14px;font-weight:700;cursor:pointer;';
+    reloadBtn.onclick = () => window.location.reload();
+    const resetBtn = document.createElement('button');
+    resetBtn.type = 'button';
+    resetBtn.textContent = 'ล้างข้อมูลแคชแล้วโหลดใหม่';
+    resetBtn.style.cssText =
+      'padding:8px 16px;border:1px solid #d6d3d1;border-radius:8px;background:#fff;color:#44403c;font-size:14px;font-weight:700;cursor:pointer;';
+    resetBtn.onclick = () => {
+      try {
+        localStorage.clear();
+      } catch {
+        // ignore storage errors
+      }
+      window.location.reload();
+    };
+    btnRow.appendChild(reloadBtn);
+    btnRow.appendChild(resetBtn);
     box.appendChild(title);
     box.appendChild(detail);
+    box.appendChild(btnRow);
     rootElement.appendChild(box);
   };
 
   window.addEventListener('error', (event) => {
     showBootErrorIfEmpty(event.message || 'Unknown script error');
+  });
+
+  window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason instanceof Error ? event.reason.message : String(event.reason || 'Unhandled error');
+    showBootErrorIfEmpty(reason);
   });
 
   try {
