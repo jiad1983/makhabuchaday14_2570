@@ -20,13 +20,16 @@ function ensureStorageDirs(): void
     }
     $dataHtaccess = DATA_DIR . DIRECTORY_SEPARATOR . '.htaccess';
     if (!file_exists($dataHtaccess)) {
-        @file_put_contents($dataHtaccess, "Require all denied\nDeny from all\n");
+        @file_put_contents(
+            $dataHtaccess,
+            "<IfModule mod_authz_core.c>\n  Require all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\n  Order allow,deny\n  Deny from all\n</IfModule>\n"
+        );
     }
     $uploadsHtaccess = UPLOADS_DIR . DIRECTORY_SEPARATOR . '.htaccess';
     if (!file_exists($uploadsHtaccess)) {
         @file_put_contents(
             $uploadsHtaccess,
-            "Options -ExecCGI\n<FilesMatch \"\\.(php|phtml|php3|php4|php5|php7|php8|phar|pl|py|cgi|sh)$\">\n  Require all denied\n  Deny from all\n</FilesMatch>\n"
+            "<FilesMatch \"\\.(php|phtml|php3|php4|php5|php7|php8|phar|pl|py|cgi|sh)$\">\n  <IfModule mod_authz_core.c>\n    Require all denied\n  </IfModule>\n  <IfModule !mod_authz_core.c>\n    Order allow,deny\n    Deny from all\n  </IfModule>\n</FilesMatch>\n"
         );
     }
 }
@@ -248,6 +251,46 @@ function buildInitialSchedules(): array
     return $map;
 }
 
+function getDbDefaults(): array
+{
+    $criteriaMap = [];
+    foreach (getCompetitions() as $comp) {
+        $criteriaMap[$comp['id']] = getDefaultCompetitionCriteria($comp['id']);
+    }
+    return [
+        'adminCredentials' => [
+            'username' => 'admin',
+            'displayName' => 'พระบุญทัน ธมฺมธาตา (Admin)',
+        ],
+        'registrationOpen' => true,
+        'menuPermissions' => [
+            'student-card' => true,
+            'coach-card' => true,
+            'judge-card' => true,
+            'judge-cert' => true,
+            'school-cert' => true,
+            'school-results' => true,
+            'results' => true,
+        ],
+        'backgrounds' => [
+            'bannerBgUrl' => '',
+            'studentCardBgUrl' => '',
+            'coachCardBgUrl' => '',
+            'judgeCardBgUrl' => '',
+            'certBgUrl' => '',
+        ],
+        'schools' => [],
+        'judges' => [],
+        'schedules' => buildInitialSchedules(),
+        'registrations' => [],
+        'scores' => [],
+        'scoreCriteriaDetails' => [],
+        'evalMeta' => [],
+        'absentRegs' => [],
+        'customCriteriaByComp' => $criteriaMap,
+    ];
+}
+
 function createInitialDb(): array
 {
     $altarStudents = [];
@@ -263,10 +306,12 @@ function createInitialDb(): array
         $criteriaMap[$comp['id']] = getDefaultCompetitionCriteria($comp['id']);
     }
 
+    $defaultHash = password_hash('1234', PASSWORD_DEFAULT);
+
     return [
         'adminCredentials' => [
             'username' => 'admin',
-            'passwordHash' => password_hash('1234', PASSWORD_DEFAULT),
+            'passwordHash' => $defaultHash,
             'displayName' => 'พระบุญทัน ธมฺมธาตา (Admin)',
         ],
         'registrationOpen' => true,
@@ -290,7 +335,7 @@ function createInitialDb(): array
             [
                 'id' => 'sch-10112201',
                 'schoolCode' => '10112201',
-                'passwordHash' => password_hash('1234', PASSWORD_DEFAULT),
+                'passwordHash' => $defaultHash,
                 'name' => 'โรงเรียนสุรินทร์ธรรมวิทยาคม',
                 'director' => 'นายสมชาย ใจดีมีธรรม',
                 'phone' => '044-511-234',
@@ -298,7 +343,7 @@ function createInitialDb(): array
             [
                 'id' => 'sch-10112202',
                 'schoolCode' => '10112202',
-                'passwordHash' => password_hash('1234', PASSWORD_DEFAULT),
+                'passwordHash' => $defaultHash,
                 'name' => 'โรงเรียนศรีณรงค์พุทธอุปถัมภ์',
                 'director' => 'นางสาววิภาดา รักสงบ',
                 'phone' => '044-512-890',
@@ -306,7 +351,7 @@ function createInitialDb(): array
             [
                 'id' => 'sch-10112203',
                 'schoolCode' => '10112203',
-                'passwordHash' => password_hash('1234', PASSWORD_DEFAULT),
+                'passwordHash' => $defaultHash,
                 'name' => 'โรงเรียนปราสาทปัญญาคุณ',
                 'director' => 'นายเกรียงไกร บุญญารักษ์',
                 'phone' => '044-513-456',
@@ -316,7 +361,7 @@ function createInitialDb(): array
             [
                 'id' => 'jdg-1',
                 'username' => 'judge1',
-                'passwordHash' => password_hash('1234', PASSWORD_DEFAULT),
+                'passwordHash' => $defaultHash,
                 'name' => 'พระมหาสมปอง ปัญญาธโร',
                 'position' => 'ประธานกรรมการตัดสิน',
                 'competitionId' => 'comp-1',
@@ -326,7 +371,7 @@ function createInitialDb(): array
             [
                 'id' => 'jdg-2',
                 'username' => 'judge2',
-                'passwordHash' => password_hash('1234', PASSWORD_DEFAULT),
+                'passwordHash' => $defaultHash,
                 'name' => 'ดร.กัญญาณี สุนทรธรรม',
                 'position' => 'กรรมการตัดสิน',
                 'competitionId' => 'comp-1',
@@ -336,7 +381,7 @@ function createInitialDb(): array
             [
                 'id' => 'jdg-3',
                 'username' => 'judge3',
-                'passwordHash' => password_hash('1234', PASSWORD_DEFAULT),
+                'passwordHash' => $defaultHash,
                 'name' => 'อาจารย์ธนวัฒน์ ศรีสวัสดิ์',
                 'position' => 'กรรมการตัดสิน',
                 'competitionId' => 'comp-1',
@@ -346,7 +391,7 @@ function createInitialDb(): array
             [
                 'id' => 'jdg-4',
                 'username' => 'judge4',
-                'passwordHash' => password_hash('1234', PASSWORD_DEFAULT),
+                'passwordHash' => $defaultHash,
                 'name' => 'นางสาวพิมพ์ชนก วรรณศิลป์',
                 'position' => 'กรรมการตัดสิน',
                 'competitionId' => 'comp-1',
@@ -356,7 +401,7 @@ function createInitialDb(): array
             [
                 'id' => 'jdg-5',
                 'username' => 'judge5',
-                'passwordHash' => password_hash('1234', PASSWORD_DEFAULT),
+                'passwordHash' => $defaultHash,
                 'name' => 'ครูสุรศักดิ์ เสียงไพเราะ',
                 'position' => 'ประธานกรรมการตัดสิน',
                 'competitionId' => 'comp-3',
@@ -486,7 +531,7 @@ function loadDb(): array
         return json_decode(json_encode($initial, JSON_UNESCAPED_UNICODE), true);
     }
 
-    $defaults = json_decode(json_encode(createInitialDb(), JSON_UNESCAPED_UNICODE), true);
+    $defaults = getDbDefaults();
     $decoded['schedules'] = array_merge($defaults['schedules'], is_array($decoded['schedules'] ?? null) ? $decoded['schedules'] : []);
     $decoded['menuPermissions'] = array_merge($defaults['menuPermissions'], is_array($decoded['menuPermissions'] ?? null) ? $decoded['menuPermissions'] : []);
     $decoded['backgrounds'] = array_merge($defaults['backgrounds'], is_array($decoded['backgrounds'] ?? null) ? $decoded['backgrounds'] : []);
@@ -499,6 +544,13 @@ function loadDb(): array
         if (!isset($decoded[$objKey]) || !is_array($decoded[$objKey])) {
             $decoded[$objKey] = $defaults[$objKey];
         }
+    }
+    if (empty($decoded['adminCredentials']) || !is_array($decoded['adminCredentials'])) {
+        $decoded['adminCredentials'] = [
+            'username' => 'admin',
+            'passwordHash' => password_hash('1234', PASSWORD_DEFAULT),
+            'displayName' => 'พระบุญทัน ธมฺมธาตา (Admin)',
+        ];
     }
     return $decoded;
 }
@@ -541,14 +593,18 @@ function startAppSession(): void
     $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
         || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
 
-    session_set_cookie_params([
-        'lifetime' => 86400 * 7,
-        'path' => '/',
-        'httponly' => true,
-        'samesite' => 'Lax',
-        'secure' => $isHttps,
-    ]);
-    session_start();
+    if (PHP_VERSION_ID >= 70300) {
+        @session_set_cookie_params([
+            'lifetime' => 86400 * 7,
+            'path' => '/',
+            'httponly' => true,
+            'samesite' => 'Lax',
+            'secure' => $isHttps,
+        ]);
+    } else {
+        @session_set_cookie_params(86400 * 7, '/', '', $isHttps, true);
+    }
+    @session_start();
 
     if (empty($_SESSION['csrf_token'])) {
         $_SESSION['csrf_token'] = bin2hex(random_bytes(32));

@@ -136,13 +136,22 @@ function collectRegUploadPaths(array $reg): array
     return $paths;
 }
 
+function persistDbOrFail(array $db): void
+{
+    if (!saveDb($db)) {
+        jsonResponse(500, ['ok' => false, 'error' => 'ไม่สามารถบันทึกข้อมูลลงโฟลเดอร์ data/ ได้ กรุณาตรวจสอบสิทธิ์เขียนไฟล์ (755/775)']);
+    }
+}
+
 $action = (string)($_GET['action'] ?? '');
 $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
 
 $db = loadDb();
 
 if ($method === 'GET' && ($action === 'bootstrap' || $action === '')) {
-    jsonResponse(200, ['ok' => true, 'state' => buildClientPayload($db, $_SESSION['auth'])]);
+    $payload = buildClientPayload($db, $_SESSION['auth']);
+    @session_write_close();
+    jsonResponse(200, ['ok' => true, 'state' => $payload]);
 }
 
 if ($method !== 'POST') {
@@ -284,7 +293,7 @@ switch ($action) {
             'phone' => $phone,
         ];
         $db['schools'][] = $newSchool;
-        saveDb($db);
+        persistDbOrFail($db);
 
         session_regenerate_id(true);
         $_SESSION['auth'] = [
@@ -440,7 +449,7 @@ switch ($action) {
             $msg = 'ลงทะเบียนเข้าร่วมการแข่งขันเรียบร้อยแล้ว';
         }
 
-        saveDb($db);
+        persistDbOrFail($db);
         foreach ($removedUploads as $oldPath) {
             deleteLocalUploadIfUnused($oldPath, $db);
         }
@@ -471,7 +480,7 @@ switch ($action) {
         }
         array_splice($db['registrations'], $foundIndex, 1);
         unset($db['scores'][$regId], $db['scoreCriteriaDetails'][$regId], $db['absentRegs'][$regId]);
-        saveDb($db);
+        persistDbOrFail($db);
         foreach ($removedUploads as $oldPath) {
             deleteLocalUploadIfUnused($oldPath, $db);
         }
@@ -498,7 +507,7 @@ switch ($action) {
             'timeRange' => $timeRange !== '' ? $timeRange : '08.30 น. เป็นต้นไป',
             'notes' => $notes,
         ];
-        saveDb($db);
+        persistDbOrFail($db);
         jsonResponse(200, [
             'ok' => true,
             'message' => 'บันทึกข้อมูลตารางการแข่งขันเรียบร้อยแล้ว',
@@ -535,7 +544,7 @@ switch ($action) {
             ];
         }
         $db['customCriteriaByComp'][$compId] = $cleaned;
-        saveDb($db);
+        persistDbOrFail($db);
         jsonResponse(200, [
             'ok' => true,
             'message' => 'บันทึกเกณฑ์การให้คะแนนเรียบร้อยแล้ว',
@@ -550,7 +559,7 @@ switch ($action) {
             jsonResponse(400, ['ok' => false, 'error' => 'ไม่พบรายการแข่งขัน']);
         }
         $db['customCriteriaByComp'][$compId] = getDefaultCompetitionCriteria($compId);
-        saveDb($db);
+        persistDbOrFail($db);
         jsonResponse(200, [
             'ok' => true,
             'message' => 'คืนค่าเกณฑ์การให้คะแนนมาตรฐานเรียบร้อยแล้ว',
@@ -610,7 +619,7 @@ switch ($action) {
             ];
             $msg = 'เพิ่มข้อมูลโรงเรียนเรียบร้อยแล้ว';
         }
-        saveDb($db);
+        persistDbOrFail($db);
         jsonResponse(200, ['ok' => true, 'message' => $msg, 'state' => buildClientPayload($db, $_SESSION['auth'])]);
     }
 
@@ -635,7 +644,7 @@ switch ($action) {
         foreach ($removedRegIds as $rId) {
             unset($db['scores'][$rId], $db['scoreCriteriaDetails'][$rId], $db['absentRegs'][$rId]);
         }
-        saveDb($db);
+        persistDbOrFail($db);
         jsonResponse(200, ['ok' => true, 'message' => 'ลบโรงเรียนเรียบร้อยแล้ว', 'state' => buildClientPayload($db, $_SESSION['auth'])]);
     }
 
@@ -702,7 +711,7 @@ switch ($action) {
             ];
             $msg = 'เพิ่มกรรมการตัดสินเรียบร้อยแล้ว';
         }
-        saveDb($db);
+        persistDbOrFail($db);
         if ($oldJudgePhoto !== '' && $oldJudgePhoto !== $photoUrl) {
             deleteLocalUploadIfUnused($oldJudgePhoto, $db);
         }
@@ -724,7 +733,7 @@ switch ($action) {
         if (count($db['judges']) === $before) {
             jsonResponse(404, ['ok' => false, 'error' => 'ไม่พบข้อมูลกรรมการ']);
         }
-        saveDb($db);
+        persistDbOrFail($db);
         if ($removedPhoto !== '') {
             deleteLocalUploadIfUnused($removedPhoto, $db);
         }
@@ -773,7 +782,7 @@ switch ($action) {
                 unset($db['adminCredentials']['password']);
             }
         }
-        saveDb($db);
+        persistDbOrFail($db);
         jsonResponse(200, [
             'ok' => true,
             'message' => 'บันทึกการตั้งค่าระบบเรียบร้อยแล้ว',
@@ -792,7 +801,7 @@ switch ($action) {
         $oldUrl = (string)($db['backgrounds'][$key] ?? '');
         if ($dataUrl === '') {
             $db['backgrounds'][$key] = '';
-            saveDb($db);
+            persistDbOrFail($db);
             deleteLocalUploadIfUnused($oldUrl, $db);
             jsonResponse(200, ['ok' => true, 'message' => 'ลบรูปภาพพื้นหลังเรียบร้อยแล้ว', 'state' => buildClientPayload($db, $_SESSION['auth'])]);
         }
@@ -801,7 +810,7 @@ switch ($action) {
             jsonResponse(400, ['ok' => false, 'error' => 'ไฟล์รูปภาพไม่ถูกต้องหรือมีขนาดใหญ่เกินไป']);
         }
         $db['backgrounds'][$key] = $savedPath;
-        saveDb($db);
+        persistDbOrFail($db);
         if ($oldUrl !== '' && $oldUrl !== $savedPath) {
             deleteLocalUploadIfUnused($oldUrl, $db);
         }
@@ -884,7 +893,7 @@ switch ($action) {
             'status' => 'judging',
             'approved' => $currentApproved,
         ];
-        saveDb($db);
+        persistDbOrFail($db);
         jsonResponse(200, ['ok' => true, 'message' => 'บันทึกคะแนนตัดสินเรียบร้อยแล้ว', 'state' => buildClientPayload($db, $_SESSION['auth'])]);
     }
 
@@ -921,7 +930,7 @@ switch ($action) {
             unset($db['absentRegs'][$regId]);
             $msg = 'ยกเลิกสถานะไม่เข้าร่วมแข่งขันเรียบร้อยแล้ว';
         }
-        saveDb($db);
+        persistDbOrFail($db);
         jsonResponse(200, ['ok' => true, 'message' => $msg, 'state' => buildClientPayload($db, $_SESSION['auth'])]);
     }
 
@@ -936,7 +945,7 @@ switch ($action) {
             'status' => $approved ? 'completed' : 'judging',
             'approved' => $approved,
         ];
-        saveDb($db);
+        persistDbOrFail($db);
         jsonResponse(200, [
             'ok' => true,
             'message' => $approved ? 'อนุมัติผลการแข่งขันเรียบร้อยแล้ว' : 'ยกเลิกการอนุมัติผลการแข่งขันเรียบร้อยแล้ว',
