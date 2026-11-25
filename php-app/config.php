@@ -755,21 +755,50 @@ function startAppSession(): void
     if (session_status() === PHP_SESSION_ACTIVE) {
         return;
     }
+    ensureStorageDirs();
+    $sessionDir = DATA_DIR . DIRECTORY_SEPARATOR . 'sessions';
+    if (!is_dir($sessionDir)) {
+        @mkdir($sessionDir, 0755, true);
+    }
+    if (is_dir($sessionDir) && is_writable($sessionDir)) {
+        @session_save_path($sessionDir);
+    }
+
+    $lifetime = 86400 * 365;
+    @ini_set('session.gc_maxlifetime', (string)$lifetime);
+    @ini_set('session.cookie_lifetime', (string)$lifetime);
+
+    $proto = strtolower((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? ''));
     $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
-        || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+        || strpos($proto, 'https') !== false
+        || (($_SERVER['HTTP_X_FORWARDED_SSL'] ?? '') === 'on');
 
     if (PHP_VERSION_ID >= 70300) {
         @session_set_cookie_params([
-            'lifetime' => 86400 * 7,
+            'lifetime' => $lifetime,
             'path' => '/',
             'httponly' => true,
             'samesite' => 'Lax',
             'secure' => $isHttps,
         ]);
     } else {
-        @session_set_cookie_params(86400 * 7, '/', '', $isHttps, true);
+        @session_set_cookie_params($lifetime, '/', '', $isHttps, true);
     }
     @session_start();
+
+    if (session_id() !== '') {
+        if (PHP_VERSION_ID >= 70300) {
+            @setcookie(session_name(), session_id(), [
+                'expires' => time() + $lifetime,
+                'path' => '/',
+                'httponly' => true,
+                'samesite' => 'Lax',
+                'secure' => $isHttps,
+            ]);
+        } else {
+            @setcookie(session_name(), session_id(), time() + $lifetime, '/', '', $isHttps, true);
+        }
+    }
 
     if (empty($_SESSION['csrf_token'])) {
         $_SESSION['csrf_token'] = bin2hex(random_bytes(32));

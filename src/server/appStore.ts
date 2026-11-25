@@ -580,8 +580,10 @@ export function createAppStoreRouter(options: {
 
   let appState: AppStoreState = loadStore();
 
+  const SESSION_TTL_SEC = 60 * 60 * 24 * 365;
+
   function signAppToken(sessionUser: AppSessionUser): string {
-    const payload = { user: sessionUser, exp: Date.now() + 1000 * 60 * 60 * 24 * 7 };
+    const payload = { user: sessionUser, exp: Date.now() + SESSION_TTL_SEC * 1000 };
     const encoded = Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64url');
     const sig = crypto.createHmac('sha256', sessionSecret).update(`app:${encoded}`).digest('base64url');
     return `${encoded}.${sig}`;
@@ -607,20 +609,25 @@ export function createAppStoreRouter(options: {
     }
   }
 
+  function isHttpsRequest(req: Request): boolean {
+    const proto = String(req.headers['x-forwarded-proto'] || '').toLowerCase();
+    return Boolean(req.secure || proto.includes('https') || req.headers['x-forwarded-ssl'] === 'on');
+  }
+
   function setSessionCookie(req: Request, res: Response, token: string): void {
-    const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
+    const isHttps = isHttpsRequest(req);
     const attrs = [
       `${COOKIE_NAME}=${encodeURIComponent(token)}`,
       'Path=/',
       'HttpOnly',
-      `Max-Age=${60 * 60 * 24 * 7}`,
+      `Max-Age=${SESSION_TTL_SEC}`,
       isHttps ? 'SameSite=None; Secure; Partitioned' : 'SameSite=Lax',
     ];
     res.setHeader('Set-Cookie', attrs.join('; '));
   }
 
   function clearSessionCookie(req: Request, res: Response): void {
-    const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
+    const isHttps = isHttpsRequest(req);
     const attrs = [
       `${COOKIE_NAME}=`,
       'Path=/',
@@ -828,6 +835,12 @@ export function createAppStoreRouter(options: {
 
   router.get('/bootstrap', (req: Request, res: Response) => {
     const sessionUser = getSessionFromReq(req, false);
+    if (sessionUser.role !== 'guest') {
+      const refreshedToken = signAppToken(sessionUser);
+      setSessionCookie(req, res, refreshedToken);
+      res.json({ ok: true, token: refreshedToken, state: buildClientState(sessionUser) });
+      return;
+    }
     res.json({ ok: true, state: buildClientState(sessionUser) });
   });
 
@@ -835,7 +848,6 @@ export function createAppStoreRouter(options: {
     const tab = String(req.body?.loginTab || 'school');
     const username = String(req.body?.username || '').trim();
     const password = String(req.body?.password || '').trim();
-    const remember = req.body?.remember !== false;
 
     if (!username || !password) {
       res.status(400).json({ ok: false, error: 'กรุณากรอกชื่อผู้ใช้และรหัสผ่านให้ครบถ้วน' });
@@ -855,7 +867,7 @@ export function createAppStoreRouter(options: {
           judgeId: null,
         };
         const token = signAppToken(user);
-        if (remember) setSessionCookie(req, res, token);
+        setSessionCookie(req, res, token);
         res.json({
           ok: true,
           token,
@@ -881,7 +893,7 @@ export function createAppStoreRouter(options: {
           judgeId: null,
         };
         const token = signAppToken(user);
-        if (remember) setSessionCookie(req, res, token);
+        setSessionCookie(req, res, token);
         res.json({
           ok: true,
           token,
@@ -907,7 +919,7 @@ export function createAppStoreRouter(options: {
           judgeId: foundJudge.id,
         };
         const token = signAppToken(user);
-        if (remember) setSessionCookie(req, res, token);
+        setSessionCookie(req, res, token);
         res.json({
           ok: true,
           token,
@@ -929,7 +941,6 @@ export function createAppStoreRouter(options: {
     const director = String(req.body?.director || '').trim();
     const phone = String(req.body?.phone || '').trim() || '-';
     const password = String(req.body?.password || '').trim();
-    const remember = req.body?.remember !== false;
 
     if (!schoolCode || !name || !director || !password) {
       res.status(400).json({ ok: false, error: 'กรุณากรอกข้อมูลโรงเรียนให้ครบถ้วน' });
@@ -964,7 +975,7 @@ export function createAppStoreRouter(options: {
       judgeId: null,
     };
     const token = signAppToken(user);
-    if (remember) setSessionCookie(req, res, token);
+    setSessionCookie(req, res, token);
     res.status(201).json({
       ok: true,
       token,
@@ -1412,6 +1423,7 @@ export function createAppStoreRouter(options: {
         }
       }
     }
+    let refreshedToken: string | undefined;
     if (req.body?.adminCredentials && typeof req.body.adminCredentials === 'object') {
       const c = req.body.adminCredentials;
       const curPass = String(c.currentPass || '').trim();
@@ -1439,12 +1451,17 @@ export function createAppStoreRouter(options: {
       if (newPass) {
         appState.adminCredentials.passwordHash = hashSecret(newPass);
       }
-      const nextToken = signAppToken(user);
-      setSessionCookie(req, res, nextToken);
+      refreshedToken = signAppToken(user);
+      setSessionCookie(req, res, refreshedToken);
     }
 
     saveStore(appState);
-    res.json({ ok: true, message: 'บันทึกการตั้งค่าระบบเรียบร้อยแล้ว', state: buildClientState(user) });
+    res.json({
+      ok: true,
+      ...(refreshedToken ? { token: refreshedToken } : {}),
+      message: 'บันทึกการตั้งค่าระบบเรียบร้อยแล้ว',
+      state: buildClientState(user),
+    });
   });
 
   router.post('/admin/backgrounds', (req: Request, res: Response) => {

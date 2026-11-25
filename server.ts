@@ -34,7 +34,31 @@ const DB_FILE = path.resolve(DATA_DIR, 'db.json');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
-const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+function loadOrCreateSessionSecret(): string {
+  if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.trim().length >= 16) {
+    return process.env.SESSION_SECRET.trim();
+  }
+  const storeDir = path.resolve(DATA_DIR, 'store');
+  fs.mkdirSync(storeDir, { recursive: true });
+  const secretFile = path.resolve(storeDir, '.session-secret');
+  try {
+    if (fs.existsSync(secretFile)) {
+      const existing = fs.readFileSync(secretFile, 'utf-8').trim();
+      if (existing.length >= 32) return existing;
+    }
+  } catch {
+    // ignore read error and regenerate
+  }
+  const generated = crypto.randomBytes(32).toString('hex');
+  try {
+    fs.writeFileSync(secretFile, generated, { encoding: 'utf-8', mode: 0o600 });
+  } catch {
+    // fallback in memory if filesystem is read-only
+  }
+  return generated;
+}
+
+const SESSION_SECRET = loadOrCreateSessionSecret();
 
 interface StoredSchool extends School {
   passwordHash: string;

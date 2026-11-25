@@ -1179,8 +1179,57 @@ function buildPrintableHtmlDoc(
 // 4. MAIN APPLICATION COMPONENT
 // ============================================================================
 
+const SESSION_TOKEN_KEY = 'mb_session_token';
+const ACTIVE_MENU_KEY = 'mb_active_menu';
+
+function readStoredSessionToken(): string {
+  try {
+    return localStorage.getItem(SESSION_TOKEN_KEY) || sessionStorage.getItem(SESSION_TOKEN_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function persistSessionToken(token: string): void {
+  if (!token) return;
+  try {
+    localStorage.setItem(SESSION_TOKEN_KEY, token);
+  } catch {
+    // ignore storage quota/privacy mode errors
+  }
+  try {
+    sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+  } catch {
+    // ignore
+  }
+}
+
+function clearStoredSessionToken(): void {
+  try {
+    localStorage.removeItem(SESSION_TOKEN_KEY);
+    localStorage.removeItem(ACTIVE_MENU_KEY);
+  } catch {
+    // ignore
+  }
+  try {
+    sessionStorage.removeItem(SESSION_TOKEN_KEY);
+    sessionStorage.removeItem(ACTIVE_MENU_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+function readStoredActiveMenu(): string {
+  try {
+    const saved = sessionStorage.getItem(ACTIVE_MENU_KEY) || localStorage.getItem(ACTIVE_MENU_KEY) || '';
+    return saved && saved !== 'login' ? saved : 'home';
+  } catch {
+    return 'home';
+  }
+}
+
 export default function App() {
-  const apiTokenRef = useRef<string>('');
+  const apiTokenRef = useRef<string>(readStoredSessionToken());
   const [storageStats, setStorageStats] = useState<StorageStats | null>(null);
   const [isUploadingImage, setIsUploadingImage] = useState<boolean>(false);
 
@@ -1201,7 +1250,7 @@ export default function App() {
     judgeId: null
   });
 
-  const [activeMenu, setActiveMenu] = useState<string>('home');
+  const [activeMenu, setActiveMenu] = useState<string>(() => readStoredActiveMenu());
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   const [desktopSidebarOpen, setDesktopSidebarOpen] = useState<boolean>(true);
   const [postLoginRedirect, setPostLoginRedirect] = useState<string | null>(null);
@@ -1964,8 +2013,9 @@ export default function App() {
     if (!resp.ok || data?.ok === false) {
       throw new Error(data?.error || `เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์ (${resp.status})`);
     }
-    if (typeof data?.token === 'string') {
+    if (typeof data?.token === 'string' && data.token) {
       apiTokenRef.current = data.token;
+      persistSessionToken(data.token);
     }
     if (data?.state) {
       applyAppServerState(data.state);
@@ -2041,10 +2091,64 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
-        const resp = await fetch(getAppApiUrl('/bootstrap'), { credentials: 'include' });
+        const headers: Record<string, string> = {};
+        const storedTok = apiTokenRef.current || readStoredSessionToken();
+        if (storedTok) {
+          apiTokenRef.current = storedTok;
+          headers.Authorization = `Bearer ${storedTok}`;
+        }
+        const resp = await fetch(getAppApiUrl('/bootstrap'), {
+          credentials: 'include',
+          headers
+        });
         if (!resp.ok || cancelled) return;
         const data = await resp.json();
         if (!cancelled && data?.ok && data?.state) {
+          const restoredRole = (data.state?.authSession?.role || 'guest') as RoleType;
+          if (restoredRole === 'guest') {
+            apiTokenRef.current = '';
+            clearStoredSessionToken();
+            setActiveMenu((cur) =>
+              ['home', 'competitions', 'schedule', 'results', 'register', 'login'].includes(cur) ? cur : 'home'
+            );
+          } else if (typeof data?.token === 'string' && data.token) {
+            apiTokenRef.current = data.token;
+            persistSessionToken(data.token);
+          }
+          if (restoredRole === 'judge') {
+            const loggedJudgeId = data.state?.authSession?.judgeId;
+            const srvJudges: JudgeItem[] = Array.isArray(data.state?.judges) ? data.state.judges : [];
+            const foundJudge = srvJudges.find((j) => j.id === loggedJudgeId);
+            const srvRegs: RegistrationItem[] = Array.isArray(data.state?.registrations) ? data.state.registrations : [];
+            const srvCriteria = data.state?.customCriteriaByComp || customCriteriaByComp;
+            const srvDetails = data.state?.scoreCriteriaDetails || {};
+            const srvScores = data.state?.scores || {};
+            if (foundJudge) {
+              const criteriaList =
+                foundJudge.competitionId === 'comp-7'
+                  ? [{ key: 'correctAnswers', label: 'จำนวนข้อสอบที่ตอบถูกต้อง (ลงคะแนนตามข้อที่ตอบถูก)', max: 100, maxLabel: '100 ข้อ/คะแนน' }]
+                  : getCompetitionCriteria(foundJudge.competitionId, srvCriteria);
+              const initialDraft: Record<string, Record<string, number | ''>> = {};
+              srvRegs
+                .filter((r) => r.competitionId === foundJudge.competitionId && r.level === foundJudge.level)
+                .forEach((r) => {
+                  const existingDetail = srvDetails[r.id]?.[foundJudge.id];
+                  const existingTotal = srvScores[r.id]?.[foundJudge.id];
+                  const rowDraft: Record<string, number | ''> = {};
+                  criteriaList.forEach((crit, cIdx) => {
+                    if (existingDetail && existingDetail[crit.key] !== undefined) {
+                      rowDraft[crit.key] = existingDetail[crit.key];
+                    } else if (cIdx === 0 && existingTotal !== undefined && !existingDetail) {
+                      rowDraft[crit.key] = existingTotal;
+                    } else {
+                      rowDraft[crit.key] = '';
+                    }
+                  });
+                  initialDraft[r.id] = rowDraft;
+                });
+              setDraftCriteriaScores(initialDraft);
+            }
+          }
           applyAppServerState(data.state);
         }
       } catch {
@@ -2055,6 +2159,16 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  React.useEffect(() => {
+    if (!activeMenu || activeMenu === 'login') return;
+    try {
+      sessionStorage.setItem(ACTIVE_MENU_KEY, activeMenu);
+      localStorage.setItem(ACTIVE_MENU_KEY, activeMenu);
+    } catch {
+      // ignore storage errors
+    }
+  }, [activeMenu]);
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setToast({ id: Date.now(), message, type });
@@ -2336,6 +2450,7 @@ export default function App() {
       // clear local state even if request fails
     }
     apiTokenRef.current = '';
+    clearStoredSessionToken();
     setStorageStats(null);
     setAuthSession({
       role: 'guest',
