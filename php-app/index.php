@@ -106,7 +106,7 @@ if ($bootstrapJson === false) {
           </div>
 
           <div class="sidebar-account">
-            <div class="sidebar-account-label">ผู้เข้าใช้งานระบบ</div>
+            <div class="sidebar-account-label">สถานะของผู้ใช้</div>
             <div id="sidebarAccountCard" class="account-card"></div>
           </div>
         </aside>

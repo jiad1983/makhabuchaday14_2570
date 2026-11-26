@@ -1,8 +1,8 @@
 {
   "adminCredentials": {
     "username": "admin",
-    "passwordHash": "7a8dcd0055116d19ee757e5c0e56cae1:3084048ab9fd4923328f9ad666dd280ac182eaeaf238d241b8634784de6ecfe00dce0a5c554a50694f34abd73537edd0e0b5422aa79a4a28c653b63e0d4d923c",
-    "displayName": "พระบุญทัน ธมฺมธาตา (Admin)"
+    "passwordHash": "cd1508a9ea017f4bc250fa0f5f4e5685:91f388a3c4945030a3ec9bb0249a98cde67a061d5bf1812ca3dc5f864cdfe5bd0b77facb662b845303997a75c1f62773c7e05015432e29a8eac346fa090b28be",
+    "displayName": "ผู้ดูแลระบบ"
   },
   "registrationOpen": true,
   "menuPermissions": {

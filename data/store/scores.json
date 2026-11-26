@@ -14,12 +14,19 @@
     }
   },
   "scoreCriteriaDetails": {},
+  "roundScores": {},
+  "roundScoreCriteriaDetails": {},
+  "checkIns": {},
   "evalMeta": {
     "comp-1__ประถมศึกษาตอนปลาย (ป.4-ป.6)": {
       "status": "completed",
       "approved": true
     },
     "comp-3__มัธยมศึกษาตอนต้น (ม.1-ม.3)": {
+      "status": "judging",
+      "approved": false
+    },
+    "comp-3__ประถมศึกษาตอนปลาย (ป.4-ป.6)": {
       "status": "judging",
       "approved": false
     }

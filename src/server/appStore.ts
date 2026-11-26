@@ -65,6 +65,14 @@ export interface StoredAppJudge {
   photoUrl: string;
 }
 
+export interface StoredAppManager {
+  id: string;
+  username: string;
+  passwordHash: string;
+  name: string;
+  phone: string;
+}
+
 export interface AppScheduleItem {
   venue: string;
   dateLabel: string;
@@ -102,11 +110,23 @@ export interface AppBackgrounds {
 }
 
 export interface AppSessionUser {
-  role: 'guest' | 'admin' | 'school' | 'judge';
+  role: 'guest' | 'admin' | 'manager' | 'school' | 'judge';
   userId: string | null;
   displayName: string;
   schoolId: string | null;
   judgeId: string | null;
+}
+
+export type SingingRound = 'qualifying' | 'final';
+
+export interface CheckInRecord {
+  checkedIn: boolean;
+  checkedInAt?: string;
+  updatedBy?: string;
+}
+
+export function isTwoRoundCompetition(compId: string): boolean {
+  return compId === 'comp-3' || compId === 'comp-4';
 }
 
 interface AppStoreState {
@@ -120,10 +140,20 @@ interface AppStoreState {
   backgrounds: AppBackgrounds;
   schools: StoredAppSchool[];
   judges: StoredAppJudge[];
+  managers: StoredAppManager[];
   schedules: Record<string, AppScheduleItem>;
   registrations: AppRegistration[];
   scores: Record<string, Record<string, number>>;
   scoreCriteriaDetails: Record<string, Record<string, Record<string, number>>>;
+  roundScores: Record<string, { qualifying?: Record<string, number>; final?: Record<string, number> }>;
+  roundScoreCriteriaDetails: Record<
+    string,
+    {
+      qualifying?: Record<string, Record<string, number>>;
+      final?: Record<string, Record<string, number>>;
+    }
+  >;
+  checkIns: Record<string, CheckInRecord>;
   evalMeta: Record<string, { status: string; approved: boolean }>;
   absentRegs: Record<string, boolean>;
   customCriteriaByComp: Record<string, CriterionDef[]>;
@@ -276,6 +306,7 @@ function detectImageExtension(buf: Buffer): 'png' | 'jpg' | 'gif' | 'webp' | nul
 
 function createInitialAppStore(): AppStoreState {
   const defaultHash = hashSecret('1234');
+  const adminDefaultHash = hashSecret(process.env.ADMIN_PASSCODE || 'admin258456');
   const criteriaMap: Record<string, CriterionDef[]> = {};
   APP_COMPETITIONS.forEach((c) => {
     criteriaMap[c.id] = getDefaultAppCriteria(c.id);
@@ -284,8 +315,8 @@ function createInitialAppStore(): AppStoreState {
   return {
     adminCredentials: {
       username: 'admin',
-      passwordHash: defaultHash,
-      displayName: 'พระบุญทัน ธมฺมธาตา (Admin)',
+      passwordHash: adminDefaultHash,
+      displayName: 'ผู้ดูแลระบบ',
     },
     registrationOpen: true,
     menuPermissions: {
@@ -459,12 +490,16 @@ function createInitialAppStore(): AppStoreState {
       'reg-2': { 'jdg-1': 95, 'jdg-2': 94, 'jdg-3': 96, 'jdg-4': 95 },
     },
     scoreCriteriaDetails: {},
+    roundScores: {},
+    roundScoreCriteriaDetails: {},
+    checkIns: {},
     evalMeta: {
       'comp-1__ประถมศึกษาตอนปลาย (ป.4-ป.6)': { status: 'completed', approved: true },
       'comp-3__มัธยมศึกษาตอนต้น (ม.1-ม.3)': { status: 'judging', approved: false },
     },
     absentRegs: {},
     customCriteriaByComp: criteriaMap,
+    managers: [],
   };
 }
 
@@ -520,6 +555,7 @@ export function createAppStoreRouter(options: {
     system: path.resolve(storeDir, 'system.json'),
     schools: path.resolve(storeDir, 'schools.json'),
     judges: path.resolve(storeDir, 'judges.json'),
+    managers: path.resolve(storeDir, 'managers.json'),
     schedules: path.resolve(storeDir, 'schedules.json'),
     registrations: path.resolve(storeDir, 'registrations.json'),
     scores: path.resolve(storeDir, 'scores.json'),
@@ -535,11 +571,15 @@ export function createAppStoreRouter(options: {
     });
     writeAtomicJson(storeFiles.schools, state.schools);
     writeAtomicJson(storeFiles.judges, state.judges);
+    writeAtomicJson(storeFiles.managers, state.managers);
     writeAtomicJson(storeFiles.schedules, state.schedules);
     writeAtomicJson(storeFiles.registrations, state.registrations);
     writeAtomicJson(storeFiles.scores, {
       scores: state.scores,
       scoreCriteriaDetails: state.scoreCriteriaDetails,
+      roundScores: state.roundScores,
+      roundScoreCriteriaDetails: state.roundScoreCriteriaDetails,
+      checkIns: state.checkIns,
       evalMeta: state.evalMeta,
       absentRegs: state.absentRegs,
     });
@@ -556,6 +596,7 @@ export function createAppStoreRouter(options: {
     const sys = readJsonSafe<Partial<AppStoreState>>(storeFiles.system, {});
     const schools = readJsonSafe<StoredAppSchool[]>(storeFiles.schools, defaults.schools);
     const judges = readJsonSafe<StoredAppJudge[]>(storeFiles.judges, defaults.judges);
+    const managers = readJsonSafe<StoredAppManager[]>(storeFiles.managers, defaults.managers);
     const schedules = readJsonSafe<Record<string, AppScheduleItem>>(storeFiles.schedules, {});
     const registrations = readJsonSafe<AppRegistration[]>(storeFiles.registrations, defaults.registrations);
     const scoreBundle = readJsonSafe<Partial<AppStoreState>>(storeFiles.scores, {});
@@ -568,10 +609,14 @@ export function createAppStoreRouter(options: {
       backgrounds: { ...defaults.backgrounds, ...(sys.backgrounds || {}) },
       schools: Array.isArray(schools) ? schools : defaults.schools,
       judges: Array.isArray(judges) ? judges : defaults.judges,
+      managers: Array.isArray(managers) ? managers : defaults.managers,
       schedules: { ...defaults.schedules, ...(schedules || {}) },
       registrations: Array.isArray(registrations) ? registrations : defaults.registrations,
       scores: scoreBundle.scores || {},
       scoreCriteriaDetails: scoreBundle.scoreCriteriaDetails || {},
+      roundScores: scoreBundle.roundScores || {},
+      roundScoreCriteriaDetails: scoreBundle.roundScoreCriteriaDetails || {},
+      checkIns: scoreBundle.checkIns || {},
       evalMeta: scoreBundle.evalMeta || {},
       absentRegs: scoreBundle.absentRegs || {},
       customCriteriaByComp: criteria && Object.keys(criteria).length > 0 ? criteria : defaults.customCriteriaByComp,
@@ -698,6 +743,11 @@ export function createAppStoreRouter(options: {
       if (!found) return guest;
       return { ...verified, displayName: found.name };
     }
+    if (verified.role === 'manager') {
+      const found = appState.managers.find((m) => m.id === verified.userId);
+      if (!found) return guest;
+      return { ...verified, displayName: found.name };
+    }
     if (verified.role === 'admin') {
       return { ...verified, displayName: appState.adminCredentials.displayName };
     }
@@ -797,6 +847,7 @@ export function createAppStoreRouter(options: {
       collections: {
         schools: appState.schools.length,
         judges: appState.judges.length,
+        managers: appState.managers.length,
         registrations: appState.registrations.length,
         schedules: Object.keys(appState.schedules).length,
         scores: Object.keys(appState.scores).length,
@@ -834,10 +885,22 @@ export function createAppStoreRouter(options: {
         level: j.level,
         photoUrl: j.photoUrl,
       })),
+      managers: isAdmin
+        ? appState.managers.map((m) => ({
+            id: m.id,
+            username: m.username,
+            password: '',
+            name: m.name,
+            phone: m.phone,
+          }))
+        : [],
       schedules: appState.schedules,
       registrations: appState.registrations,
       scores: appState.scores,
       scoreCriteriaDetails: appState.scoreCriteriaDetails,
+      roundScores: appState.roundScores,
+      roundScoreCriteriaDetails: appState.roundScoreCriteriaDetails,
+      checkIns: appState.checkIns,
       evalMeta: appState.evalMeta,
       absentRegs: appState.absentRegs,
       customCriteriaByComp: appState.customCriteriaByComp,
@@ -953,6 +1016,32 @@ export function createAppStoreRouter(options: {
       return;
     }
 
+    if (tab === 'manager') {
+      const foundManager = appState.managers.find(
+        (m) => m.username.trim() === username && verifySecret(password, m.passwordHash)
+      );
+      if (foundManager) {
+        const user: AppSessionUser = {
+          role: 'manager',
+          userId: foundManager.id,
+          displayName: foundManager.name,
+          schoolId: null,
+          judgeId: null,
+        };
+        const token = signAppToken(user);
+        setSessionCookie(req, res, token);
+        res.json({
+          ok: true,
+          token,
+          message: `เข้าสู่ระบบผู้จัดการแข่งขัน: ${foundManager.name}`,
+          state: buildClientState(user),
+        });
+        return;
+      }
+      res.status(401).json({ ok: false, error: 'ชื่อผู้ใช้หรือรหัสผ่านผู้จัดการแข่งขันไม่ถูกต้อง' });
+      return;
+    }
+
     res.status(400).json({ ok: false, error: 'ประเภทการเข้าสู่ระบบไม่ถูกต้อง' });
   });
 
@@ -1032,7 +1121,7 @@ export function createAppStoreRouter(options: {
       res.status(403).json({ ok: false, error: 'ไม่มีสิทธิ์อัปโหลดภาพกรรมการ' });
       return;
     }
-    if ((category === 'students' || category === 'coaches') && user.role !== 'admin' && user.role !== 'school') {
+    if ((category === 'students' || category === 'coaches') && user.role !== 'admin' && user.role !== 'manager' && user.role !== 'school') {
       res.status(403).json({ ok: false, error: 'ไม่มีสิทธิ์อัปโหลดภาพผู้เข้าแข่งขันหรือครูผู้ฝึกสอน' });
       return;
     }
@@ -1058,8 +1147,8 @@ export function createAppStoreRouter(options: {
 
   router.post('/registrations/save', (req: Request, res: Response) => {
     const user = getSessionFromReq(req, true);
-    if (user.role !== 'admin' && user.role !== 'school') {
-      res.status(403).json({ ok: false, error: 'กรุณาเข้าสู่ระบบโรงเรียนหรือผู้ดูแลระบบก่อนดำเนินการ' });
+    if (user.role !== 'admin' && user.role !== 'manager' && user.role !== 'school') {
+      res.status(403).json({ ok: false, error: 'กรุณาเข้าสู่ระบบโรงเรียน ผู้จัดการแข่งขัน หรือผู้ดูแลระบบก่อนดำเนินการ' });
       return;
     }
 
@@ -1134,7 +1223,7 @@ export function createAppStoreRouter(options: {
       removedImages = collectRegImages(existing);
       appState.registrations[idx] = {
         id: editingId,
-        schoolId: user.role === 'admin' ? schoolId : existing.schoolId,
+        schoolId: (user.role === 'admin' || user.role === 'manager') ? schoolId : existing.schoolId,
         competitionId: compId,
         level,
         students,
@@ -1165,7 +1254,7 @@ export function createAppStoreRouter(options: {
 
   router.post('/registrations/delete', (req: Request, res: Response) => {
     const user = getSessionFromReq(req, true);
-    if (user.role !== 'admin' && user.role !== 'school') {
+    if (user.role !== 'admin' && user.role !== 'manager' && user.role !== 'school') {
       res.status(403).json({ ok: false, error: 'ไม่มีสิทธิ์ลบรายการสมัคร' });
       return;
     }
@@ -1186,9 +1275,103 @@ export function createAppStoreRouter(options: {
     delete appState.absentRegs[id];
     delete appState.scores[id];
     delete appState.scoreCriteriaDetails[id];
+    delete appState.roundScores[id];
+    delete appState.roundScoreCriteriaDetails[id];
+    delete appState.checkIns[id];
     saveStore(appState);
     removedImages.forEach(deleteUploadIfUnused);
-    res.json({ ok: true, message: 'ลบรายการสมัครเรียบร้อยแล้ว', state: buildClientState(user) });
+    res.json({ ok: true, message: 'ยกเลิกการลงทะเบียนแข่งขันเรียบร้อยแล้ว', state: buildClientState(user) });
+  });
+
+  router.post('/competition/checkin', (req: Request, res: Response) => {
+    const user = getSessionFromReq(req, true);
+    if (user.role !== 'admin' && user.role !== 'manager') {
+      res.status(403).json({ ok: false, error: 'เฉพาะผู้ดูแลระบบหรือผู้จัดการแข่งขันเท่านั้น' });
+      return;
+    }
+    const status = String(req.body?.status || '').trim();
+    if (!['checked_in', 'pending', 'absent'].includes(status)) {
+      res.status(400).json({ ok: false, error: 'สถานะการลงทะเบียนเข้าร่วมแข่งขันไม่ถูกต้อง' });
+      return;
+    }
+
+    const regId = String(req.body?.registrationId || '').trim();
+    const rawRegIds = Array.isArray(req.body?.registrationIds)
+      ? req.body.registrationIds.map((id: unknown) => String(id || '').trim()).filter(Boolean)
+      : [];
+    const batchSchoolId = String(req.body?.schoolId || '').trim();
+    const batchCompId = String(req.body?.competitionId || '').trim();
+    const batchLevel = String(req.body?.level || '').trim();
+
+    let targetRegs: AppRegistration[] = [];
+    if (regId) {
+      const found = appState.registrations.find((r) => r.id === regId);
+      if (found) targetRegs = [found];
+    } else if (rawRegIds.length > 0) {
+      const idSet = new Set(rawRegIds);
+      targetRegs = appState.registrations.filter((r) => idSet.has(r.id));
+    } else if (batchSchoolId && batchCompId) {
+      targetRegs = appState.registrations.filter(
+        (r) =>
+          r.schoolId === batchSchoolId &&
+          r.competitionId === batchCompId &&
+          (!batchLevel || batchLevel === 'ทั้งหมด' || String(r.level || '').trim() === batchLevel)
+      );
+    }
+
+    if (targetRegs.length === 0) {
+      res.status(404).json({ ok: false, error: 'ไม่พบรายการผู้เข้าแข่งขันที่ต้องการลงทะเบียน' });
+      return;
+    }
+
+    if (status === 'absent') {
+      const lockedReg = targetRegs.find((reg) => {
+        const metaKey = `${reg.competitionId}__${reg.level}`;
+        return Boolean(appState.evalMeta[metaKey]?.approved);
+      });
+      if (lockedReg) {
+        res.status(403).json({ ok: false, error: 'ผู้ดูแลระบบอนุมัติผลการแข่งขันแล้ว ไม่สามารถปรับสถานะไม่เข้าร่วมได้' });
+        return;
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    targetRegs.forEach((reg) => {
+      if (status === 'absent') {
+        appState.absentRegs[reg.id] = true;
+        delete appState.scores[reg.id];
+        delete appState.scoreCriteriaDetails[reg.id];
+        delete appState.roundScores[reg.id];
+        delete appState.roundScoreCriteriaDetails[reg.id];
+        delete appState.checkIns[reg.id];
+      } else if (status === 'checked_in') {
+        delete appState.absentRegs[reg.id];
+        appState.checkIns[reg.id] = {
+          checkedIn: true,
+          checkedInAt: nowIso,
+          updatedBy: user.displayName,
+        };
+      } else {
+        delete appState.absentRegs[reg.id];
+        delete appState.checkIns[reg.id];
+      }
+    });
+
+    saveStore(appState);
+    const isBatch = targetRegs.length > 1 || Boolean(batchSchoolId);
+    const msg =
+      status === 'checked_in'
+        ? isBatch
+          ? `ลงทะเบียนรายงานตัวเข้าร่วมแข่งขันแบบโรงเรียนเรียบร้อยแล้ว (${targetRegs.length} ทีม)`
+          : 'ลงทะเบียนรายงานตัวเข้าร่วมแข่งขันเรียบร้อยแล้ว'
+        : status === 'absent'
+        ? isBatch
+          ? `บันทึกสถานะไม่เข้าร่วมแข่งขันทั้งโรงเรียนเรียบร้อยแล้ว (${targetRegs.length} ทีม)`
+          : 'บันทึกสถานะไม่เข้าร่วมแข่งขันเรียบร้อยแล้ว'
+        : isBatch
+        ? `ยกเลิกการลงทะเบียนรายงานตัวทั้งโรงเรียนเรียบร้อยแล้ว (${targetRegs.length} ทีม)`
+        : 'ยกเลิกการลงทะเบียนรายงานตัวเรียบร้อยแล้ว';
+    res.json({ ok: true, message: msg, state: buildClientState(user) });
   });
 
   router.post('/schedules/save', (req: Request, res: Response) => {
@@ -1214,8 +1397,8 @@ export function createAppStoreRouter(options: {
 
   router.post('/criteria/save', (req: Request, res: Response) => {
     const user = getSessionFromReq(req, true);
-    if (user.role !== 'admin') {
-      res.status(403).json({ ok: false, error: 'เฉพาะผู้ดูแลระบบเท่านั้น' });
+    if (user.role !== 'admin' && user.role !== 'manager') {
+      res.status(403).json({ ok: false, error: 'เฉพาะผู้ดูแลระบบหรือผู้จัดการแข่งขันเท่านั้น' });
       return;
     }
     const competitionId = String(req.body?.competitionId || '').trim();
@@ -1243,8 +1426,8 @@ export function createAppStoreRouter(options: {
 
   router.post('/criteria/reset', (req: Request, res: Response) => {
     const user = getSessionFromReq(req, true);
-    if (user.role !== 'admin') {
-      res.status(403).json({ ok: false, error: 'เฉพาะผู้ดูแลระบบเท่านั้น' });
+    if (user.role !== 'admin' && user.role !== 'manager') {
+      res.status(403).json({ ok: false, error: 'เฉพาะผู้ดูแลระบบหรือผู้จัดการแข่งขันเท่านั้น' });
       return;
     }
     const competitionId = String(req.body?.competitionId || '').trim();
@@ -1331,6 +1514,9 @@ export function createAppStoreRouter(options: {
         removedImages.push(...collectRegImages(r));
         delete appState.scores[r.id];
         delete appState.scoreCriteriaDetails[r.id];
+        delete appState.roundScores[r.id];
+        delete appState.roundScoreCriteriaDetails[r.id];
+        delete appState.checkIns[r.id];
         delete appState.absentRegs[r.id];
         return false;
       }
@@ -1425,6 +1611,82 @@ export function createAppStoreRouter(options: {
     saveStore(appState);
     if (target.photoUrl) deleteUploadIfUnused(target.photoUrl);
     res.json({ ok: true, message: 'ลบข้อมูลกรรมการเรียบร้อยแล้ว', state: buildClientState(user) });
+  });
+
+  router.post('/admin/managers/save', (req: Request, res: Response) => {
+    const user = getSessionFromReq(req, true);
+    if (user.role !== 'admin') {
+      res.status(403).json({ ok: false, error: 'เฉพาะผู้ดูแลระบบเท่านั้น' });
+      return;
+    }
+    const id = typeof req.body?.id === 'string' && req.body.id.trim() ? req.body.id.trim() : null;
+    const username = String(req.body?.username || '').trim();
+    const password = String(req.body?.password || '').trim();
+    const name = String(req.body?.name || '').trim();
+    const phone = String(req.body?.phone || '').trim() || '-';
+
+    if (!username || !name) {
+      res.status(400).json({ ok: false, error: 'กรุณากรอก Username และชื่อ-นามสกุลผู้จัดการแข่งขัน' });
+      return;
+    }
+    if (!id && password.length < 4) {
+      res.status(400).json({ ok: false, error: 'กรุณากำหนดรหัสผ่านอย่างน้อย 4 ตัวอักษร' });
+      return;
+    }
+    if (id && password && password.length < 4) {
+      res.status(400).json({ ok: false, error: 'รหัสผ่านใหม่ต้องมีอย่างน้อย 4 ตัวอักษร' });
+      return;
+    }
+    if (appState.managers.some((m) => m.id !== id && m.username.trim() === username)) {
+      res.status(409).json({ ok: false, error: 'Username ผู้จัดการแข่งขันนี้มีอยู่ในระบบแล้ว' });
+      return;
+    }
+
+    let msg = '';
+    if (id) {
+      const idx = appState.managers.findIndex((m) => m.id === id);
+      if (idx === -1) {
+        res.status(404).json({ ok: false, error: 'ไม่พบข้อมูลผู้จัดการแข่งขัน' });
+        return;
+      }
+      appState.managers[idx] = {
+        ...appState.managers[idx],
+        username,
+        name,
+        phone,
+        passwordHash: password ? hashSecret(password) : appState.managers[idx].passwordHash,
+      };
+      msg = 'แก้ไขข้อมูลผู้จัดการแข่งขันเรียบร้อยแล้ว';
+    } else {
+      appState.managers.push({
+        id: `mgr-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`,
+        username,
+        passwordHash: hashSecret(password),
+        name,
+        phone,
+      });
+      msg = 'เพิ่มผู้จัดการแข่งขันเรียบร้อยแล้ว';
+    }
+
+    saveStore(appState);
+    res.json({ ok: true, message: msg, state: buildClientState(user) });
+  });
+
+  router.post('/admin/managers/delete', (req: Request, res: Response) => {
+    const user = getSessionFromReq(req, true);
+    if (user.role !== 'admin') {
+      res.status(403).json({ ok: false, error: 'เฉพาะผู้ดูแลระบบเท่านั้น' });
+      return;
+    }
+    const id = String(req.body?.id || '').trim();
+    const before = appState.managers.length;
+    appState.managers = appState.managers.filter((m) => m.id !== id);
+    if (appState.managers.length === before) {
+      res.status(404).json({ ok: false, error: 'ไม่พบข้อมูลผู้จัดการแข่งขัน' });
+      return;
+    }
+    saveStore(appState);
+    res.json({ ok: true, message: 'ลบผู้จัดการแข่งขันเรียบร้อยแล้ว', state: buildClientState(user) });
   });
 
   router.post('/admin/settings', (req: Request, res: Response) => {
@@ -1555,6 +1817,8 @@ export function createAppStoreRouter(options: {
       return;
     }
 
+    const isTwoRound = isTwoRoundCompetition(judge.competitionId);
+    const reqRound: SingingRound = req.body?.round === 'final' ? 'final' : 'qualifying';
     const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
     const criteriaList =
       judge.competitionId === 'comp-7'
@@ -1588,11 +1852,39 @@ export function createAppStoreRouter(options: {
           res.status(400).json({ ok: false, error: 'คะแนนรวมต้องไม่เกิน 100 คะแนน' });
           return;
         }
-        appState.scores[regId] = { ...(appState.scores[regId] || {}), [judge.id]: Number(total.toFixed(2)) };
-        appState.scoreCriteriaDetails[regId] = {
-          ...(appState.scoreCriteriaDetails[regId] || {}),
-          [judge.id]: detailOut,
-        };
+        const totalRounded = Number(total.toFixed(2));
+        if (isTwoRound) {
+          const prevRounds = appState.roundScores[regId] || {};
+          const prevRoundDetails = appState.roundScoreCriteriaDetails[regId] || {};
+          // Preserve legacy single-map scores as qualifying round before writing final round
+          if (!prevRounds.qualifying && reqRound === 'final' && appState.scores[regId] && Object.keys(appState.scores[regId]).length > 0) {
+            prevRounds.qualifying = { ...appState.scores[regId] };
+            if (appState.scoreCriteriaDetails[regId]) {
+              prevRoundDetails.qualifying = { ...appState.scoreCriteriaDetails[regId] };
+            }
+          }
+          const nextRoundScores = {
+            ...prevRounds,
+            [reqRound]: { ...(prevRounds[reqRound] || {}), [judge.id]: totalRounded },
+          };
+          const nextRoundDetails = {
+            ...prevRoundDetails,
+            [reqRound]: { ...(prevRoundDetails[reqRound] || {}), [judge.id]: detailOut },
+          };
+          appState.roundScores[regId] = nextRoundScores;
+          appState.roundScoreCriteriaDetails[regId] = nextRoundDetails;
+
+          const hasFinal = Object.keys(nextRoundScores.final || {}).length > 0;
+          const activeLatestRound: SingingRound = hasFinal ? 'final' : 'qualifying';
+          appState.scores[regId] = { ...(nextRoundScores[activeLatestRound] || {}) };
+          appState.scoreCriteriaDetails[regId] = { ...(nextRoundDetails[activeLatestRound] || {}) };
+        } else {
+          appState.scores[regId] = { ...(appState.scores[regId] || {}), [judge.id]: totalRounded };
+          appState.scoreCriteriaDetails[regId] = {
+            ...(appState.scoreCriteriaDetails[regId] || {}),
+            [judge.id]: detailOut,
+          };
+        }
       }
     }
 
@@ -1601,7 +1893,13 @@ export function createAppStoreRouter(options: {
       approved: Boolean(appState.evalMeta[metaKey]?.approved),
     };
     saveStore(appState);
-    res.json({ ok: true, message: 'บันทึกคะแนนตัดสินเรียบร้อยแล้ว', state: buildClientState(user) });
+    res.json({
+      ok: true,
+      message: isTwoRound
+        ? `บันทึกคะแนน${reqRound === 'final' ? 'รอบตัดสิน' : 'รอบคัดเลือก'}เรียบร้อยแล้ว (อัปเดตผลคะแนนล่าสุดสำหรับประกาศผลแล้ว)`
+        : 'บันทึกคะแนนตัดสินเรียบร้อยแล้ว',
+      state: buildClientState(user),
+    });
   });
 
   router.post('/judge/absent', (req: Request, res: Response) => {
@@ -1632,6 +1930,9 @@ export function createAppStoreRouter(options: {
       appState.absentRegs[regId] = true;
       delete appState.scores[regId];
       delete appState.scoreCriteriaDetails[regId];
+      delete appState.roundScores[regId];
+      delete appState.roundScoreCriteriaDetails[regId];
+      delete appState.checkIns[regId];
     } else {
       delete appState.absentRegs[regId];
     }
