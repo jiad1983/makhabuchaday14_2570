@@ -175,10 +175,162 @@ if ($method === 'GET' && ($action === 'bootstrap' || $action === '')) {
     jsonResponse(200, ['ok' => true, 'state' => $payload]);
 }
 
+function collectPhpEmbeddedUploadsForBackup(array $db): array
+{
+    $out = [];
+    $urls = [];
+    foreach (($db['backgrounds'] ?? []) as $u) {
+        if (is_string($u) && trim($u) !== '') {
+            $urls[trim($u)] = true;
+        }
+    }
+    foreach (($db['judges'] ?? []) as $j) {
+        if (!empty($j['photoUrl']) && is_string($j['photoUrl'])) {
+            $urls[trim($j['photoUrl'])] = true;
+        }
+    }
+    foreach (($db['registrations'] ?? []) as $r) {
+        foreach (($r['students'] ?? []) as $st) {
+            if (!empty($st['photoUrl']) && is_string($st['photoUrl'])) {
+                $urls[trim($st['photoUrl'])] = true;
+            }
+        }
+        foreach (($r['coaches'] ?? []) as $co) {
+            if (is_array($co) && !empty($co['photoUrl']) && is_string($co['photoUrl'])) {
+                $urls[trim($co['photoUrl'])] = true;
+            }
+        }
+    }
+
+    $mimeByExt = [
+        'png' => 'image/png',
+        'jpg' => 'image/jpeg',
+        'jpeg' => 'image/jpeg',
+        'gif' => 'image/gif',
+        'webp' => 'image/webp',
+    ];
+    $baseReal = realpath(UPLOADS_DIR);
+    if ($baseReal === false) {
+        return $out;
+    }
+
+    $totalBytes = 0;
+    $maxEmbedBytes = 18 * 1024 * 1024;
+    foreach (array_keys($urls) as $rawUrl) {
+        if (!preg_match('/^\/?uploads\/(?:(students|coaches|judges|backgrounds)\/)?([a-zA-Z0-9_\-]+\.(png|jpg|jpeg|gif|webp))$/i', $rawUrl, $m)) {
+            continue;
+        }
+        $sub = !empty($m[1]) ? strtolower($m[1]) : '';
+        $file = basename($m[2]);
+        $candidate = $sub !== ''
+            ? (UPLOADS_DIR . DIRECTORY_SEPARATOR . $sub . DIRECTORY_SEPARATOR . $file)
+            : (UPLOADS_DIR . DIRECTORY_SEPARATOR . $file);
+        $full = realpath($candidate);
+        if ($full === false || strpos($full, $baseReal . DIRECTORY_SEPARATOR) !== 0 || !is_file($full)) {
+            continue;
+        }
+        $sz = (int)@filesize($full);
+        if ($sz <= 0 || $sz > 6 * 1024 * 1024 || ($totalBytes + $sz) > $maxEmbedBytes) {
+            continue;
+        }
+        $bin = @file_get_contents($full);
+        if ($bin === false) {
+            continue;
+        }
+        $ext = strtolower($m[3]);
+        $mime = $mimeByExt[$ext] ?? 'image/jpeg';
+        $normKey = $sub !== '' ? ('uploads/' . $sub . '/' . $file) : ('uploads/' . $file);
+        $out[$normKey] = 'data:' . $mime . ';base64,' . base64_encode($bin);
+        $totalBytes += $sz;
+    }
+    return $out;
+}
+
+function restorePhpEmbeddedUploadEntry(string $rawKey, string $dataUrl): void
+{
+    if (!preg_match('/^\/?uploads\/(?:(students|coaches|judges|backgrounds)\/)?([a-zA-Z0-9_\-]+\.(png|jpg|jpeg|gif|webp))$/i', trim($rawKey), $m)) {
+        return;
+    }
+    if (!preg_match('/^data:image\/(png|jpeg|jpg|gif|webp);base64,([A-Za-z0-9+\/=]+)$/i', trim($dataUrl), $dm)) {
+        return;
+    }
+    $binary = base64_decode($dm[2], true);
+    if ($binary === false || $binary === '' || strlen($binary) > 6 * 1024 * 1024) {
+        return;
+    }
+    $info = @getimagesizefromstring($binary);
+    if ($info === false || empty($info['mime'])) {
+        return;
+    }
+    ensureStorageDirs();
+    $baseReal = realpath(UPLOADS_DIR);
+    if ($baseReal === false) {
+        return;
+    }
+    $sub = !empty($m[1]) ? strtolower($m[1]) : '';
+    $file = basename($m[2]);
+    $targetDir = $sub !== '' ? (UPLOADS_DIR . DIRECTORY_SEPARATOR . $sub) : UPLOADS_DIR;
+    if (!is_dir($targetDir)) {
+        @mkdir($targetDir, 0755, true);
+    }
+    $dirReal = realpath($targetDir);
+    if ($dirReal === false || ($dirReal !== $baseReal && strpos($dirReal, $baseReal . DIRECTORY_SEPARATOR) !== 0)) {
+        return;
+    }
+    @file_put_contents($dirReal . DIRECTORY_SEPARATOR . $file, $binary, LOCK_EX);
+}
+
+function normalizeRestoredPhpImageUrl($raw, string $category = 'students', string $prefix = 'img'): string
+{
+    $val = trim((string)($raw ?? ''));
+    if ($val === '') {
+        return '';
+    }
+    if (preg_match('/^\/?(uploads\/(?:(?:students|coaches|judges|backgrounds)\/)?[a-zA-Z0-9_\-]+\.(png|jpg|jpeg|gif|webp))$/i', $val, $m)) {
+        return $m[1];
+    }
+    if (preg_match('/^https?:\/\//i', $val)) {
+        return $val;
+    }
+    if (preg_match('/^data:image\/(png|jpeg|jpg|gif|webp);base64,/i', $val)) {
+        return saveValidatedImageDataUrl($val, $prefix, $category);
+    }
+    return '';
+}
+
 if ($method === 'GET' && $action === 'export_backup') {
     requireRoles(['admin']);
     $payload = buildClientPayload($db, $_SESSION['auth']);
     unset($payload['csrfToken']);
+    $accountHashes = [
+        'schools' => [],
+        'judges' => [],
+        'managers' => [],
+        'registrars' => [],
+    ];
+    foreach (($db['schools'] ?? []) as $s) {
+        if (!empty($s['id']) && !empty($s['passwordHash'])) {
+            $accountHashes['schools'][(string)$s['id']] = (string)$s['passwordHash'];
+        }
+    }
+    foreach (($db['judges'] ?? []) as $j) {
+        if (!empty($j['id']) && !empty($j['passwordHash'])) {
+            $accountHashes['judges'][(string)$j['id']] = (string)$j['passwordHash'];
+        }
+    }
+    foreach (($db['managers'] ?? []) as $m) {
+        if (!empty($m['id']) && !empty($m['passwordHash'])) {
+            $accountHashes['managers'][(string)$m['id']] = (string)$m['passwordHash'];
+        }
+    }
+    foreach (($db['registrars'] ?? []) as $r) {
+        if (!empty($r['id']) && !empty($r['passwordHash'])) {
+            $accountHashes['registrars'][(string)$r['id']] = (string)$r['passwordHash'];
+        }
+    }
+    $payload['backupVersion'] = 2;
+    $payload['accountHashes'] = $accountHashes;
+    $payload['embeddedUploads'] = collectPhpEmbeddedUploadsForBackup($db);
     $payload['exportedAt'] = date('c');
     @session_write_close();
     header('Content-Disposition: attachment; filename="makhapuja_backup_' . date('Ymd_His') . '.json"');
@@ -1658,6 +1810,232 @@ switch ($action) {
         jsonResponse(200, [
             'ok' => true,
             'message' => $approved ? 'อนุมัติผลการแข่งขันเรียบร้อยแล้ว' : 'ยกเลิกการอนุมัติผลการแข่งขันเรียบร้อยแล้ว',
+            'state' => buildClientPayload($db, $_SESSION['auth']),
+        ]);
+    }
+
+    case 'restore_backup': {
+        requireRoles(['admin']);
+        $rawBackup = is_array($body['backup'] ?? null) ? $body['backup'] : $body;
+        if (!is_array($rawBackup)) {
+            jsonResponse(400, ['ok' => false, 'error' => 'รูปแบบไฟล์สำรองข้อมูล JSON ไม่ถูกต้อง']);
+        }
+        $hasCore = isset($rawBackup['schools']) && is_array($rawBackup['schools'])
+            || isset($rawBackup['registrations']) && is_array($rawBackup['registrations'])
+            || isset($rawBackup['schedules']) && is_array($rawBackup['schedules']);
+        if (!$hasCore) {
+            jsonResponse(400, ['ok' => false, 'error' => 'ไฟล์ JSON นี้ไม่ใช่ไฟล์สำรองข้อมูลของระบบการแข่งขัน']);
+        }
+
+        if (is_array($rawBackup['embeddedUploads'] ?? null)) {
+            foreach ($rawBackup['embeddedUploads'] as $k => $v) {
+                if (is_string($k) && is_string($v)) {
+                    restorePhpEmbeddedUploadEntry($k, $v);
+                }
+            }
+        }
+
+        $defaults = getDbDefaults();
+        $fallbackHash = password_hash('1234', PASSWORD_DEFAULT);
+        $isPhpPassHash = static function ($h): bool {
+            return is_string($h) && strlen($h) > 10 && $h[0] === '$';
+        };
+
+        $prevSchoolHashes = [];
+        foreach (($db['schools'] ?? []) as $s) {
+            if (!empty($s['id']) && !empty($s['passwordHash'])) $prevSchoolHashes[(string)$s['id']] = (string)$s['passwordHash'];
+        }
+        $prevJudgeHashes = [];
+        foreach (($db['judges'] ?? []) as $j) {
+            if (!empty($j['id']) && !empty($j['passwordHash'])) $prevJudgeHashes[(string)$j['id']] = (string)$j['passwordHash'];
+        }
+        $prevManagerHashes = [];
+        foreach (($db['managers'] ?? []) as $m) {
+            if (!empty($m['id']) && !empty($m['passwordHash'])) $prevManagerHashes[(string)$m['id']] = (string)$m['passwordHash'];
+        }
+        $prevRegistrarHashes = [];
+        foreach (($db['registrars'] ?? []) as $r) {
+            if (!empty($r['id']) && !empty($r['passwordHash'])) $prevRegistrarHashes[(string)$r['id']] = (string)$r['passwordHash'];
+        }
+
+        $hashes = is_array($rawBackup['accountHashes'] ?? null) ? $rawBackup['accountHashes'] : [];
+        $schoolHashMap = is_array($hashes['schools'] ?? null) ? $hashes['schools'] : [];
+        $judgeHashMap = is_array($hashes['judges'] ?? null) ? $hashes['judges'] : [];
+        $managerHashMap = is_array($hashes['managers'] ?? null) ? $hashes['managers'] : [];
+        $registrarHashMap = is_array($hashes['registrars'] ?? null) ? $hashes['registrars'] : [];
+
+        $nextSchools = $db['schools'];
+        if (is_array($rawBackup['schools'] ?? null)) {
+            $nextSchools = [];
+            foreach ($rawBackup['schools'] as $s) {
+                if (!is_array($s)) continue;
+                $id = trim((string)($s['id'] ?? ''));
+                $code = trim((string)($s['schoolCode'] ?? ''));
+                if ($id === '' || $code === '') continue;
+                $cand = $schoolHashMap[$id] ?? ($s['passwordHash'] ?? null);
+                $passHash = $isPhpPassHash($cand) ? $cand : ($prevSchoolHashes[$id] ?? $fallbackHash);
+                $nextSchools[] = [
+                    'id' => $id,
+                    'schoolCode' => $code,
+                    'passwordHash' => $passHash,
+                    'name' => trim((string)($s['name'] ?? '')),
+                    'director' => trim((string)($s['director'] ?? '')),
+                    'phone' => trim((string)($s['phone'] ?? '')),
+                ];
+            }
+        }
+
+        $nextJudges = $db['judges'];
+        if (is_array($rawBackup['judges'] ?? null)) {
+            $nextJudges = [];
+            foreach ($rawBackup['judges'] as $j) {
+                if (!is_array($j)) continue;
+                $id = trim((string)($j['id'] ?? ''));
+                $uname = trim((string)($j['username'] ?? ''));
+                if ($id === '' || $uname === '') continue;
+                $cand = $judgeHashMap[$id] ?? ($j['passwordHash'] ?? null);
+                $passHash = $isPhpPassHash($cand) ? $cand : ($prevJudgeHashes[$id] ?? $fallbackHash);
+                $nextJudges[] = [
+                    'id' => $id,
+                    'username' => $uname,
+                    'passwordHash' => $passHash,
+                    'name' => trim((string)($j['name'] ?? '')),
+                    'position' => trim((string)($j['position'] ?? 'กรรมการตัดสิน')),
+                    'competitionId' => trim((string)($j['competitionId'] ?? 'comp-1')),
+                    'level' => trim((string)($j['level'] ?? '')),
+                    'photoUrl' => normalizeRestoredPhpImageUrl($j['photoUrl'] ?? '', 'judges', 'jdg'),
+                    'schoolId' => trim((string)($j['schoolId'] ?? '')),
+                ];
+            }
+        }
+
+        $nextManagers = $db['managers'] ?? [];
+        if (is_array($rawBackup['managers'] ?? null)) {
+            $nextManagers = [];
+            foreach ($rawBackup['managers'] as $m) {
+                if (!is_array($m)) continue;
+                $id = trim((string)($m['id'] ?? ''));
+                $uname = trim((string)($m['username'] ?? ''));
+                if ($id === '' || $uname === '') continue;
+                $cand = $managerHashMap[$id] ?? ($m['passwordHash'] ?? null);
+                $passHash = $isPhpPassHash($cand) ? $cand : ($prevManagerHashes[$id] ?? $fallbackHash);
+                $nextManagers[] = [
+                    'id' => $id,
+                    'username' => $uname,
+                    'passwordHash' => $passHash,
+                    'name' => trim((string)($m['name'] ?? '')),
+                    'phone' => trim((string)($m['phone'] ?? '')),
+                ];
+            }
+        }
+
+        $nextRegistrars = $db['registrars'] ?? [];
+        if (is_array($rawBackup['registrars'] ?? null)) {
+            $nextRegistrars = [];
+            foreach ($rawBackup['registrars'] as $r) {
+                if (!is_array($r)) continue;
+                $id = trim((string)($r['id'] ?? ''));
+                $uname = trim((string)($r['username'] ?? ''));
+                if ($id === '' || $uname === '') continue;
+                $cand = $registrarHashMap[$id] ?? ($r['passwordHash'] ?? null);
+                $passHash = $isPhpPassHash($cand) ? $cand : ($prevRegistrarHashes[$id] ?? $fallbackHash);
+                $nextRegistrars[] = [
+                    'id' => $id,
+                    'username' => $uname,
+                    'passwordHash' => $passHash,
+                    'name' => trim((string)($r['name'] ?? '')),
+                    'phone' => trim((string)($r['phone'] ?? '')),
+                ];
+            }
+        }
+
+        $nextRegs = $db['registrations'];
+        if (is_array($rawBackup['registrations'] ?? null)) {
+            $nextRegs = [];
+            foreach ($rawBackup['registrations'] as $r) {
+                if (!is_array($r)) continue;
+                $id = trim((string)($r['id'] ?? ''));
+                $schId = trim((string)($r['schoolId'] ?? ''));
+                if ($id === '' || $schId === '') continue;
+                $students = [];
+                foreach (($r['students'] ?? []) as $st) {
+                    if (!is_array($st)) continue;
+                    $sName = trim((string)($st['name'] ?? ''));
+                    if ($sName === '') continue;
+                    $students[] = [
+                        'name' => $sName,
+                        'photoUrl' => normalizeRestoredPhpImageUrl($st['photoUrl'] ?? '', 'students', 'stu'),
+                    ];
+                }
+                $coaches = [];
+                foreach (($r['coaches'] ?? []) as $co) {
+                    if (is_string($co)) {
+                        $cName = trim($co);
+                        if ($cName !== '') $coaches[] = ['name' => $cName, 'photoUrl' => ''];
+                    } elseif (is_array($co)) {
+                        $cName = trim((string)($co['name'] ?? ''));
+                        if ($cName !== '') {
+                            $coaches[] = [
+                                'name' => $cName,
+                                'photoUrl' => normalizeRestoredPhpImageUrl($co['photoUrl'] ?? '', 'coaches', 'coach'),
+                            ];
+                        }
+                    }
+                }
+                $nextRegs[] = [
+                    'id' => $id,
+                    'schoolId' => $schId,
+                    'competitionId' => trim((string)($r['competitionId'] ?? '')),
+                    'level' => trim((string)($r['level'] ?? '')),
+                    'students' => $students,
+                    'coaches' => $coaches,
+                    'qualifyingSong' => trim((string)($r['qualifyingSong'] ?? '')),
+                    'finalSong' => trim((string)($r['finalSong'] ?? '')),
+                ];
+            }
+        }
+
+        $rawBg = is_array($rawBackup['backgrounds'] ?? null) ? $rawBackup['backgrounds'] : [];
+        $nextBackgrounds = [
+            'bannerBgUrl' => normalizeRestoredPhpImageUrl($rawBg['bannerBgUrl'] ?? '', 'backgrounds', 'bg'),
+            'studentCardBgUrl' => normalizeRestoredPhpImageUrl($rawBg['studentCardBgUrl'] ?? '', 'backgrounds', 'bg'),
+            'coachCardBgUrl' => normalizeRestoredPhpImageUrl($rawBg['coachCardBgUrl'] ?? '', 'backgrounds', 'bg'),
+            'judgeCardBgUrl' => normalizeRestoredPhpImageUrl($rawBg['judgeCardBgUrl'] ?? '', 'backgrounds', 'bg'),
+            'certBgUrl' => normalizeRestoredPhpImageUrl($rawBg['certBgUrl'] ?? '', 'backgrounds', 'bg'),
+        ];
+
+        $asAssoc = static function ($v, array $fallback = []): array {
+            return is_array($v) ? $v : $fallback;
+        };
+
+        $db = hydrateDbShape([
+            'adminCredentials' => $db['adminCredentials'],
+            'registrationOpen' => isset($rawBackup['registrationOpen']) ? (bool)$rawBackup['registrationOpen'] : (bool)($db['registrationOpen'] ?? true),
+            'menuPermissions' => array_merge($defaults['menuPermissions'], $asAssoc($rawBackup['menuPermissions'] ?? [])),
+            'backgrounds' => $nextBackgrounds,
+            'schools' => $nextSchools,
+            'judges' => $nextJudges,
+            'managers' => $nextManagers,
+            'registrars' => $nextRegistrars,
+            'schedules' => array_merge($defaults['schedules'], $asAssoc($rawBackup['schedules'] ?? [])),
+            'registrations' => $nextRegs,
+            'scores' => $asAssoc($rawBackup['scores'] ?? []),
+            'scoreCriteriaDetails' => $asAssoc($rawBackup['scoreCriteriaDetails'] ?? []),
+            'roundScores' => $asAssoc($rawBackup['roundScores'] ?? []),
+            'roundScoreCriteriaDetails' => $asAssoc($rawBackup['roundScoreCriteriaDetails'] ?? []),
+            'checkIns' => $asAssoc($rawBackup['checkIns'] ?? []),
+            'evalMeta' => $asAssoc($rawBackup['evalMeta'] ?? []),
+            'absentRegs' => $asAssoc($rawBackup['absentRegs'] ?? []),
+            'recusedJudges' => $asAssoc($rawBackup['recusedJudges'] ?? []),
+            'customCriteriaByComp' => count($asAssoc($rawBackup['customCriteriaByComp'] ?? [])) > 0
+                ? array_merge($defaults['customCriteriaByComp'], $asAssoc($rawBackup['customCriteriaByComp'] ?? []))
+                : $defaults['customCriteriaByComp'],
+        ]);
+
+        persistDbOrFail($db);
+        jsonResponse(200, [
+            'ok' => true,
+            'message' => 'กู้คืนข้อมูลจากไฟล์สำรองสำเร็จ (โรงเรียน ' . count($nextSchools) . ' แห่ง, ทีมสมัคร ' . count($nextRegs) . ' ทีม, กรรมการ ' . count($nextJudges) . ' ท่าน)',
             'state' => buildClientPayload($db, $_SESSION['auth']),
         ]);
     }

@@ -1649,8 +1649,17 @@ function readStoredActiveMenu(): string {
 
 export default function App() {
   const apiTokenRef = useRef<string>(readStoredSessionToken());
+  const restoreBackupInputRef = useRef<HTMLInputElement | null>(null);
   const [storageStats, setStorageStats] = useState<StorageStats | null>(null);
   const [isUploadingImage, setIsUploadingImage] = useState<boolean>(false);
+  const [isRestoringBackup, setIsRestoringBackup] = useState<boolean>(false);
+  const [restoreConfirmData, setRestoreConfirmData] = useState<{
+    filename: string;
+    backup: Record<string, any>;
+    schoolsCount: number;
+    registrationsCount: number;
+    judgesCount: number;
+  } | null>(null);
 
   const [adminCredentials, setAdminCredentials] = useState<AdminCredentials>({
     username: 'admin',
@@ -2692,6 +2701,51 @@ export default function App() {
       showToast('ดาวน์โหลดไฟล์สำรองข้อมูลระบบเรียบร้อยแล้ว');
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'เกิดข้อผิดพลาดในการสำรองข้อมูล', 'error');
+    }
+  };
+
+  const handleSelectRestoreBackupFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('รูปแบบไฟล์ JSON ไม่ถูกต้อง');
+      }
+      const hasCore =
+        Array.isArray(parsed.schools) ||
+        Array.isArray(parsed.registrations) ||
+        (parsed.schedules && typeof parsed.schedules === 'object');
+      if (!hasCore) {
+        throw new Error('ไฟล์นี้ไม่ใช่ไฟล์สำรองข้อมูลของระบบการแข่งขัน');
+      }
+      setRestoreConfirmData({
+        filename: file.name,
+        backup: parsed,
+        schoolsCount: Array.isArray(parsed.schools) ? parsed.schools.length : 0,
+        registrationsCount: Array.isArray(parsed.registrations) ? parsed.registrations.length : 0,
+        judgesCount: Array.isArray(parsed.judges) ? parsed.judges.length : 0
+      });
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'ไม่สามารถอ่านไฟล์ JSON สำรองข้อมูลได้', 'error');
+    }
+  };
+
+  const handleConfirmRestoreBackup = async () => {
+    if (!restoreConfirmData) return;
+    setIsRestoringBackup(true);
+    try {
+      const res = await appApiCall<{ message?: string }>('/admin/restore', {
+        backup: restoreConfirmData.backup
+      });
+      setRestoreConfirmData(null);
+      showToast(res.message || 'นำเข้าและกู้คืนข้อมูลจากไฟล์สำรองเรียบร้อยแล้ว');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'ไม่สามารถกู้คืนข้อมูลจากไฟล์สำรองได้', 'error');
+    } finally {
+      setIsRestoringBackup(false);
     }
   };
 
@@ -13091,14 +13145,32 @@ export default function App() {
                 ข้อมูลทั้งหมดจัดเก็บแยกเป็นหมวดหมู่บนเซิร์ฟเวอร์ (data/store/*.json) และรูปภาพจัดเก็บเป็นไฟล์จริงแยกโฟลเดอร์ (students / coaches / judges / backgrounds)
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => void handleDownloadServerBackup()}
-              className="inline-flex items-center gap-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white px-4 py-2.5 text-xs sm:text-sm font-bold shadow-sm transition cursor-pointer shrink-0"
-            >
-              <Download className="w-4 h-4" />
-              <span>สำรองข้อมูลระบบ (.json)</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <input
+                ref={restoreBackupInputRef}
+                type="file"
+                accept=".json,application/json"
+                onChange={(e) => void handleSelectRestoreBackupFile(e)}
+                className="hidden"
+              />
+              <button
+                type="button"
+                disabled={isRestoringBackup}
+                onClick={() => restoreBackupInputRef.current?.click()}
+                className="inline-flex items-center gap-2 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white px-4 py-2.5 text-xs sm:text-sm font-bold shadow-sm transition cursor-pointer"
+              >
+                {isRestoringBackup ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                <span>นำเข้าไฟล์สำรอง (.json)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDownloadServerBackup()}
+                className="inline-flex items-center gap-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white px-4 py-2.5 text-xs sm:text-sm font-bold shadow-sm transition cursor-pointer"
+              >
+                <Download className="w-4 h-4" />
+                <span>สำรองข้อมูลระบบ (.json)</span>
+              </button>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-center">
@@ -15495,6 +15567,69 @@ export default function App() {
                   className="w-full rounded-xl bg-gradient-to-r from-slate-800 to-slate-900 hover:from-slate-900 hover:to-black text-white font-bold py-3 text-sm shadow-md transition cursor-pointer"
                 >
                   รับทราบและปิดหน้าต่าง
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm Restore JSON Backup Modal */}
+      {restoreConfirmData && (
+        <div
+          onClick={() => { if (!isRestoringBackup) setRestoreConfirmData(null); }}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-sm p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-3xl bg-white shadow-2xl border border-slate-100 overflow-hidden"
+          >
+            <div className="bg-gradient-to-r from-amber-500 to-orange-600 px-6 py-5 text-white">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-extrabold flex items-center gap-2">
+                  <Upload className="w-5 h-5" />
+                  <span>ยืนยันการนำเข้าไฟล์สำรองข้อมูล</span>
+                </h3>
+                <button
+                  type="button"
+                  disabled={isRestoringBackup}
+                  onClick={() => setRestoreConfirmData(null)}
+                  className="rounded-full bg-white/20 hover:bg-white/30 p-1 text-white transition cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <p className="text-xs text-amber-100 mt-1 truncate">
+                ไฟล์: {restoreConfirmData.filename}
+              </p>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="rounded-2xl bg-amber-50 border border-amber-200 p-4 text-xs text-amber-900 space-y-1.5">
+                <div className="font-bold text-sm">ข้อมูลที่จะนำเข้าสู่ระบบ:</div>
+                <div>• โรงเรียน: <strong>{restoreConfirmData.schoolsCount}</strong> แห่ง</div>
+                <div>• ทีมสมัครแข่งขัน: <strong>{restoreConfirmData.registrationsCount}</strong> ทีม</div>
+                <div>• คณะกรรมการ: <strong>{restoreConfirmData.judgesCount}</strong> ท่าน</div>
+              </div>
+              <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-xl p-3 leading-relaxed">
+                ⚠ การกู้คืนจะเขียนทับข้อมูลปัจจุบันบนเซิร์ฟเวอร์ด้วยข้อมูลจากไฟล์สำรอง (บัญชีผู้ดูแลระบบปัจจุบันจะยังคงอยู่เพื่อป้องกันการหลุดออกจากระบบ)
+              </p>
+              <div className="flex gap-2.5 pt-1">
+                <button
+                  type="button"
+                  disabled={isRestoringBackup}
+                  onClick={() => setRestoreConfirmData(null)}
+                  className="flex-1 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-bold py-2.5 text-sm transition cursor-pointer"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="button"
+                  disabled={isRestoringBackup}
+                  onClick={() => void handleConfirmRestoreBackup()}
+                  className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white font-bold py-2.5 text-sm shadow-sm transition cursor-pointer"
+                >
+                  {isRestoringBackup && <Loader2 className="w-4 h-4 animate-spin" />}
+                  <span>ยืนยันกู้คืนข้อมูล</span>
                 </button>
               </div>
             </div>

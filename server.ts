@@ -393,7 +393,7 @@ function isAdminClaimed(): boolean {
 
 function startServer() {
   const app = express();
-  app.use(express.json({ limit: '10mb' }));
+  app.use(express.json({ limit: '30mb' }));
 
   // Safely serve categorized uploaded images from data/uploads/:category/:filename
   app.get('/uploads/:category/:filename', (req: Request, res: Response) => {

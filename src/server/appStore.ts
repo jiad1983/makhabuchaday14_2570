@@ -2317,18 +2317,325 @@ export function createAppStoreRouter(options: {
     });
   });
 
+  function collectEmbeddedUploadsForBackup(): Record<string, string> {
+    const out: Record<string, string> = {};
+    const urls = new Set<string>();
+    Object.values(appState.backgrounds || {}).forEach((u) => {
+      if (typeof u === 'string' && u.trim()) urls.add(u.trim());
+    });
+    appState.judges.forEach((j) => {
+      if (typeof j.photoUrl === 'string' && j.photoUrl.trim()) urls.add(j.photoUrl.trim());
+    });
+    appState.registrations.forEach((r) => {
+      r.students.forEach((st) => {
+        if (typeof st.photoUrl === 'string' && st.photoUrl.trim()) urls.add(st.photoUrl.trim());
+      });
+      r.coaches.forEach((co) => {
+        if (typeof co.photoUrl === 'string' && co.photoUrl.trim()) urls.add(co.photoUrl.trim());
+      });
+    });
+
+    const mimeByExt: Record<string, string> = {
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      gif: 'image/gif',
+      webp: 'image/webp',
+    };
+    let totalBytes = 0;
+    const MAX_EMBED_BYTES = 18 * 1024 * 1024;
+
+    for (const rawUrl of urls) {
+      const m = rawUrl.match(/^\/?uploads\/(?:(students|coaches|judges|backgrounds)\/)?([a-zA-Z0-9_-]+\.(png|jpg|jpeg|gif|webp))$/i);
+      if (!m) continue;
+      const sub = m[1] ? m[1].toLowerCase() : '';
+      const safeFile = path.basename(m[2]);
+      const target = sub
+        ? path.resolve(uploadsDir, sub, safeFile)
+        : path.resolve(uploadsDir, safeFile);
+      if (!target.startsWith(uploadsDir + path.sep) || !fs.existsSync(target)) continue;
+      try {
+        const stat = fs.statSync(target);
+        if (!stat.isFile() || stat.size > 6 * 1024 * 1024 || totalBytes + stat.size > MAX_EMBED_BYTES) {
+          continue;
+        }
+        const buf = fs.readFileSync(target);
+        const ext = m[3].toLowerCase();
+        const mime = mimeByExt[ext] || 'image/jpeg';
+        const normKey = sub ? `/uploads/${sub}/${safeFile}` : `/uploads/${safeFile}`;
+        out[normKey] = `data:${mime};base64,${buf.toString('base64')}`;
+        totalBytes += stat.size;
+      } catch {
+        // skip unreadable file
+      }
+    }
+    return out;
+  }
+
+  function restoreEmbeddedUploadEntry(rawKey: string, dataUrl: string): void {
+    const m = String(rawKey || '').trim().match(/^\/?uploads\/(?:(students|coaches|judges|backgrounds)\/)?([a-zA-Z0-9_-]+\.(png|jpg|jpeg|gif|webp))$/i);
+    if (!m) return;
+    const matchData = String(dataUrl || '').trim().match(/^data:image\/(png|jpeg|jpg|gif|webp);base64,([A-Za-z0-9+/=]+)$/i);
+    if (!matchData) return;
+    const buf = Buffer.from(matchData[2], 'base64');
+    if (!buf.length || buf.length > 6 * 1024 * 1024) return;
+    if (!detectImageExtension(buf)) return;
+
+    const sub = m[1] ? m[1].toLowerCase() : '';
+    const safeFile = path.basename(m[2]);
+    const targetDir = sub ? path.resolve(uploadsDir, sub) : path.resolve(uploadsDir);
+    fs.mkdirSync(targetDir, { recursive: true });
+    const targetPath = path.resolve(targetDir, safeFile);
+    if (!targetPath.startsWith(uploadsDir + path.sep)) return;
+    fs.writeFileSync(targetPath, buf);
+  }
+
+  function normalizeRestoredImageUrl(raw: unknown, category: UploadCategory, prefix: string): string {
+    const val = String(raw || '').trim();
+    if (!val) return '';
+    const uploadMatch = val.match(/^\/?(uploads\/(?:(?:students|coaches|judges|backgrounds)\/)?[a-zA-Z0-9_-]+\.(png|jpg|jpeg|gif|webp))$/i);
+    if (uploadMatch) {
+      return `/${uploadMatch[1]}`;
+    }
+    if (/^https?:\/\//i.test(val)) {
+      return val;
+    }
+    if (/^data:image\/(png|jpeg|jpg|gif|webp);base64,/i.test(val)) {
+      return saveImageToUploadFolder(val, category, prefix);
+    }
+    return '';
+  }
+
   router.get('/admin/backup', (req: Request, res: Response) => {
     const user = getSessionFromReq(req, false);
     if (user.role !== 'admin') {
       res.status(403).json({ ok: false, error: 'เฉพาะผู้ดูแลระบบเท่านั้น' });
       return;
     }
+    const accountHashes = {
+      schools: Object.fromEntries(appState.schools.map((s) => [s.id, s.passwordHash])),
+      judges: Object.fromEntries(appState.judges.map((j) => [j.id, j.passwordHash])),
+      managers: Object.fromEntries(appState.managers.map((m) => [m.id, m.passwordHash])),
+      registrars: Object.fromEntries(appState.registrars.map((r) => [r.id, r.passwordHash])),
+    };
     const payload = {
       ...buildClientState(user),
+      backupVersion: 2,
+      accountHashes,
+      embeddedUploads: collectEmbeddedUploadsForBackup(),
       exportedAt: new Date().toISOString(),
     };
     res.setHeader('Content-Disposition', `attachment; filename="makhapuja_backup_${new Date().toISOString().slice(0, 10)}.json"`);
     res.json(payload);
+  });
+
+  router.post('/admin/restore', (req: Request, res: Response) => {
+    const user = getSessionFromReq(req, true);
+    if (user.role !== 'admin') {
+      res.status(403).json({ ok: false, error: 'เฉพาะผู้ดูแลระบบเท่านั้นที่นำเข้าไฟล์สำรองข้อมูลได้' });
+      return;
+    }
+    const rawBody = req.body;
+    const rawBackup = rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody) && rawBody.backup && typeof rawBody.backup === 'object'
+      ? rawBody.backup
+      : rawBody;
+    if (!rawBackup || typeof rawBackup !== 'object' || Array.isArray(rawBackup)) {
+      res.status(400).json({ ok: false, error: 'รูปแบบไฟล์สำรองข้อมูล JSON ไม่ถูกต้อง' });
+      return;
+    }
+    const hasCoreCollections =
+      Array.isArray(rawBackup.schools) ||
+      Array.isArray(rawBackup.registrations) ||
+      (rawBackup.schedules && typeof rawBackup.schedules === 'object');
+    if (!hasCoreCollections) {
+      res.status(400).json({ ok: false, error: 'ไฟล์ JSON นี้ไม่ใช่ไฟล์สำรองข้อมูลของระบบการแข่งขัน' });
+      return;
+    }
+
+    if (rawBackup.embeddedUploads && typeof rawBackup.embeddedUploads === 'object' && !Array.isArray(rawBackup.embeddedUploads)) {
+      for (const [k, v] of Object.entries(rawBackup.embeddedUploads as Record<string, unknown>)) {
+        if (typeof v === 'string') {
+          restoreEmbeddedUploadEntry(k, v);
+        }
+      }
+    }
+
+    const defaults = createInitialAppStore();
+    const fallbackHash = hashSecret('1234');
+    const isScryptHash = (h: unknown): h is string =>
+      typeof h === 'string' && /^[0-9a-f]{32}:[0-9a-f]{128}$/i.test(h.trim());
+
+    const prevSchoolHashById = new Map(appState.schools.map((s) => [s.id, s.passwordHash]));
+    const prevJudgeHashById = new Map(appState.judges.map((j) => [j.id, j.passwordHash]));
+    const prevManagerHashById = new Map(appState.managers.map((m) => [m.id, m.passwordHash]));
+    const prevRegistrarHashById = new Map(appState.registrars.map((r) => [r.id, r.passwordHash]));
+
+    const hashesObj = rawBackup.accountHashes && typeof rawBackup.accountHashes === 'object' ? rawBackup.accountHashes : {};
+    const schoolHashMap = hashesObj.schools && typeof hashesObj.schools === 'object' ? hashesObj.schools : {};
+    const judgeHashMap = hashesObj.judges && typeof hashesObj.judges === 'object' ? hashesObj.judges : {};
+    const managerHashMap = hashesObj.managers && typeof hashesObj.managers === 'object' ? hashesObj.managers : {};
+    const registrarHashMap = hashesObj.registrars && typeof hashesObj.registrars === 'object' ? hashesObj.registrars : {};
+
+    const nextSchools: StoredAppSchool[] = Array.isArray(rawBackup.schools)
+      ? rawBackup.schools
+          .filter((s: any) => s && typeof s === 'object' && String(s.id || '').trim() && String(s.schoolCode || '').trim())
+          .map((s: any) => {
+            const id = String(s.id).trim();
+            const candidateHash = schoolHashMap[id] ?? s.passwordHash;
+            const passwordHash = isScryptHash(candidateHash)
+              ? candidateHash.trim()
+              : (prevSchoolHashById.get(id) || fallbackHash);
+            return {
+              id,
+              schoolCode: String(s.schoolCode || '').trim(),
+              passwordHash,
+              name: String(s.name || '').trim(),
+              director: String(s.director || '').trim(),
+              phone: String(s.phone || '').trim(),
+            };
+          })
+      : appState.schools;
+
+    const nextJudges: StoredAppJudge[] = Array.isArray(rawBackup.judges)
+      ? rawBackup.judges
+          .filter((j: any) => j && typeof j === 'object' && String(j.id || '').trim() && String(j.username || '').trim())
+          .map((j: any) => {
+            const id = String(j.id).trim();
+            const candidateHash = judgeHashMap[id] ?? j.passwordHash;
+            const passwordHash = isScryptHash(candidateHash)
+              ? candidateHash.trim()
+              : (prevJudgeHashById.get(id) || fallbackHash);
+            return {
+              id,
+              username: String(j.username || '').trim(),
+              passwordHash,
+              name: String(j.name || '').trim(),
+              position: String(j.position || 'กรรมการตัดสิน').trim(),
+              competitionId: String(j.competitionId || 'comp-1').trim(),
+              level: String(j.level || '').trim(),
+              photoUrl: normalizeRestoredImageUrl(j.photoUrl, 'judges', 'jdg'),
+              schoolId: String(j.schoolId || '').trim(),
+            };
+          })
+      : appState.judges;
+
+    const nextManagers: StoredAppManager[] = Array.isArray(rawBackup.managers)
+      ? rawBackup.managers
+          .filter((m: any) => m && typeof m === 'object' && String(m.id || '').trim() && String(m.username || '').trim())
+          .map((m: any) => {
+            const id = String(m.id).trim();
+            const candidateHash = managerHashMap[id] ?? m.passwordHash;
+            const passwordHash = isScryptHash(candidateHash)
+              ? candidateHash.trim()
+              : (prevManagerHashById.get(id) || fallbackHash);
+            return {
+              id,
+              username: String(m.username || '').trim(),
+              passwordHash,
+              name: String(m.name || '').trim(),
+              phone: String(m.phone || '').trim(),
+            };
+          })
+      : appState.managers;
+
+    const nextRegistrars: StoredAppRegistrar[] = Array.isArray(rawBackup.registrars)
+      ? rawBackup.registrars
+          .filter((r: any) => r && typeof r === 'object' && String(r.id || '').trim() && String(r.username || '').trim())
+          .map((r: any) => {
+            const id = String(r.id).trim();
+            const candidateHash = registrarHashMap[id] ?? r.passwordHash;
+            const passwordHash = isScryptHash(candidateHash)
+              ? candidateHash.trim()
+              : (prevRegistrarHashById.get(id) || fallbackHash);
+            return {
+              id,
+              username: String(r.username || '').trim(),
+              passwordHash,
+              name: String(r.name || '').trim(),
+              phone: String(r.phone || '').trim(),
+            };
+          })
+      : appState.registrars;
+
+    const nextRegistrations: AppRegistration[] = Array.isArray(rawBackup.registrations)
+      ? rawBackup.registrations
+          .filter((r: any) => r && typeof r === 'object' && String(r.id || '').trim() && String(r.schoolId || '').trim())
+          .map((r: any) => ({
+            id: String(r.id).trim(),
+            schoolId: String(r.schoolId || '').trim(),
+            competitionId: String(r.competitionId || '').trim(),
+            level: String(r.level || '').trim(),
+            students: Array.isArray(r.students)
+              ? r.students
+                  .filter((st: any) => st && typeof st === 'object' && String(st.name || '').trim())
+                  .map((st: any) => ({
+                    name: String(st.name || '').trim(),
+                    photoUrl: normalizeRestoredImageUrl(st.photoUrl, 'students', 'stu'),
+                  }))
+              : [],
+            coaches: Array.isArray(r.coaches)
+              ? r.coaches
+                  .map((co: any) =>
+                    typeof co === 'string'
+                      ? { name: co.trim(), photoUrl: '' }
+                      : co && typeof co === 'object'
+                      ? {
+                          name: String(co.name || '').trim(),
+                          photoUrl: normalizeRestoredImageUrl(co.photoUrl, 'coaches', 'coach'),
+                        }
+                      : { name: '', photoUrl: '' }
+                  )
+                  .filter((co: AppCoachMember) => co.name !== '')
+              : [],
+            qualifyingSong: String(r.qualifyingSong || '').trim(),
+            finalSong: String(r.finalSong || '').trim(),
+          }))
+      : appState.registrations;
+
+    const rawBg = rawBackup.backgrounds && typeof rawBackup.backgrounds === 'object' ? rawBackup.backgrounds : {};
+    const nextBackgrounds: AppBackgrounds = {
+      bannerBgUrl: normalizeRestoredImageUrl(rawBg.bannerBgUrl, 'backgrounds', 'bg'),
+      studentCardBgUrl: normalizeRestoredImageUrl(rawBg.studentCardBgUrl, 'backgrounds', 'bg'),
+      coachCardBgUrl: normalizeRestoredImageUrl(rawBg.coachCardBgUrl, 'backgrounds', 'bg'),
+      judgeCardBgUrl: normalizeRestoredImageUrl(rawBg.judgeCardBgUrl, 'backgrounds', 'bg'),
+      certBgUrl: normalizeRestoredImageUrl(rawBg.certBgUrl, 'backgrounds', 'bg'),
+    };
+
+    const asPlainObj = (v: unknown, fallback: Record<string, any> = {}): Record<string, any> =>
+      v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, any>) : fallback;
+
+    appState = {
+      adminCredentials: appState.adminCredentials,
+      registrationOpen:
+        typeof rawBackup.registrationOpen === 'boolean' ? rawBackup.registrationOpen : appState.registrationOpen,
+      menuPermissions: { ...defaults.menuPermissions, ...asPlainObj(rawBackup.menuPermissions) },
+      backgrounds: nextBackgrounds,
+      schools: nextSchools,
+      judges: nextJudges,
+      managers: nextManagers,
+      registrars: nextRegistrars,
+      schedules: { ...defaults.schedules, ...asPlainObj(rawBackup.schedules) },
+      registrations: nextRegistrations,
+      scores: asPlainObj(rawBackup.scores, {}),
+      scoreCriteriaDetails: asPlainObj(rawBackup.scoreCriteriaDetails, {}),
+      roundScores: asPlainObj(rawBackup.roundScores, {}),
+      roundScoreCriteriaDetails: asPlainObj(rawBackup.roundScoreCriteriaDetails, {}),
+      checkIns: asPlainObj(rawBackup.checkIns, {}),
+      evalMeta: asPlainObj(rawBackup.evalMeta, {}),
+      absentRegs: asPlainObj(rawBackup.absentRegs, {}),
+      recusedJudges: asPlainObj(rawBackup.recusedJudges, {}),
+      customCriteriaByComp:
+        Object.keys(asPlainObj(rawBackup.customCriteriaByComp)).length > 0
+          ? { ...defaults.customCriteriaByComp, ...asPlainObj(rawBackup.customCriteriaByComp) }
+          : defaults.customCriteriaByComp,
+    };
+
+    saveStore(appState);
+    res.json({
+      ok: true,
+      message: `กู้คืนข้อมูลจากไฟล์สำรองสำเร็จ (โรงเรียน ${nextSchools.length} แห่ง, ทีมสมัคร ${nextRegistrations.length} ทีม, กรรมการ ${nextJudges.length} ท่าน)`,
+      state: buildClientState(user),
+    });
   });
 
   return router;

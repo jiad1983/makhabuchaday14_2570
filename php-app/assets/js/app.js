@@ -3178,7 +3178,11 @@
         '<div class="card stack">' +
           '<div class="row-between">' +
             '<div><h3 style="margin:0;">💾 ระบบจัดเก็บข้อมูลและไฟล์ภาพบนเซิร์ฟเวอร์</h3><p style="margin:4px 0 0;font-size:13px;color:#64748b;">จัดเก็บแยกหมวดหมู่ใน data/*.json และ uploads/{students,coaches,judges,backgrounds}/</p></div>' +
-            '<a href="api.php?action=export_backup" class="btn btn-amber btn-sm" download>⬇ สำรองข้อมูลระบบ (.json)</a>' +
+            '<div class="row-wrap">' +
+              '<input type="file" id="admRestoreBackupFile" accept=".json,application/json" style="display:none;" />' +
+              '<button type="button" class="btn btn-primary btn-sm" id="btnRestoreBackup">⬆ นำเข้าไฟล์สำรอง (.json)</button>' +
+              '<a href="api.php?action=export_backup" class="btn btn-amber btn-sm" download>⬇ สำรองข้อมูลระบบ (.json)</a>' +
+            '</div>' +
           '</div>' +
           (state.storageStats
             ? '<div class="grid-4">' +
@@ -3381,6 +3385,47 @@
         showToast(res.message); renderAll();
       } catch (err) { showToast(err.message, 'error'); }
     };
+
+    const restoreBtn = document.getElementById('btnRestoreBackup');
+    const restoreFileInp = document.getElementById('admRestoreBackupFile');
+    if (restoreBtn && restoreFileInp) {
+      restoreBtn.onclick = function () { restoreFileInp.click(); };
+      restoreFileInp.onchange = function () {
+        const file = restoreFileInp.files && restoreFileInp.files[0];
+        restoreFileInp.value = '';
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = function () {
+          try {
+            const parsed = JSON.parse(String(reader.result || ''));
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+              throw new Error('รูปแบบไฟล์ JSON ไม่ถูกต้อง');
+            }
+            const hasCore = Array.isArray(parsed.schools) || Array.isArray(parsed.registrations) || (parsed.schedules && typeof parsed.schedules === 'object');
+            if (!hasCore) {
+              throw new Error('ไฟล์นี้ไม่ใช่ไฟล์สำรองข้อมูลของระบบการแข่งขัน');
+            }
+            const schCnt = Array.isArray(parsed.schools) ? parsed.schools.length : 0;
+            const regCnt = Array.isArray(parsed.registrations) ? parsed.registrations.length : 0;
+            const jdgCnt = Array.isArray(parsed.judges) ? parsed.judges.length : 0;
+            openConfirmModal(
+              'ยืนยันการนำเข้าไฟล์สำรองข้อมูล',
+              'ไฟล์: ' + file.name + ' (โรงเรียน ' + schCnt + ' แห่ง, ทีมสมัคร ' + regCnt + ' ทีม, กรรมการ ' + jdgCnt + ' ท่าน) — ข้อมูลปัจจุบันบนเซิร์ฟเวอร์จะถูกแทนที่ด้วยไฟล์สำรอง (บัญชีผู้ดูแลระบบปัจจุบันจะยังคงอยู่)',
+              async function () {
+                try {
+                  const res = await apiCall('restore_backup', { backup: parsed });
+                  showToast(res.message); renderAll();
+                } catch (err) { showToast(err.message, 'error'); }
+              },
+              'ยืนยันกู้คืนข้อมูล'
+            );
+          } catch (err) {
+            showToast(err instanceof Error ? err.message : 'ไม่สามารถอ่านไฟล์ JSON สำรองข้อมูลได้', 'error');
+          }
+        };
+        reader.readAsText(file);
+      };
+    }
   }
 
   function renderJudgeScoring(main) {
