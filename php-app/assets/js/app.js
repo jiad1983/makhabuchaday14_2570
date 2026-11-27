@@ -13,7 +13,8 @@
     initialState = {};
   }
 
-  const MANAGER_ALLOWED_MENUS = ['home', 'register', 'competitions', 'schedule', 'results', 'judge-card', 'judge-cert', 'admin-competition-manage'];
+  const MANAGER_ALLOWED_MENUS = ['home', 'register', 'competitions', 'schedule', 'results', 'judge-card', 'judge-cert', 'admin-competition-manage', 'competition-checkin', 'score-entry'];
+  const REGISTRAR_ALLOWED_MENUS = ['home', 'register', 'competitions', 'schedule', 'competition-checkin', 'results'];
 
   const state = {
     csrfToken: initialState.csrfToken || '',
@@ -27,6 +28,7 @@
     schools: Array.isArray(initialState.schools) ? initialState.schools : [],
     judges: Array.isArray(initialState.judges) ? initialState.judges : [],
     managers: Array.isArray(initialState.managers) ? initialState.managers : [],
+    registrars: Array.isArray(initialState.registrars) ? initialState.registrars : [],
     schedules: initialState.schedules || {},
     registrations: Array.isArray(initialState.registrations) ? initialState.registrations : [],
     scores: initialState.scores || {},
@@ -36,10 +38,15 @@
     checkIns: initialState.checkIns || {},
     evalMeta: initialState.evalMeta || {},
     absentRegs: initialState.absentRegs || {},
+    recusedJudges: initialState.recusedJudges || {},
     customCriteriaByComp: initialState.customCriteriaByComp || {},
 
     // UI State
-    activeMenu: (initialState.authSession && initialState.authSession.role === 'manager') ? 'admin-competition-manage' : 'home',
+    activeMenu: (initialState.authSession && initialState.authSession.role === 'manager')
+      ? 'admin-competition-manage'
+      : (initialState.authSession && initialState.authSession.role === 'registrar')
+      ? 'competition-checkin'
+      : 'home',
     mobileMenuOpen: false,
     desktopSidebarOpen: true,
     loginMenuExpanded: true,
@@ -65,6 +72,10 @@
     compManageRegMode: 'team',
     compManageCheckinFilter: 'all',
     compManageCheckinSearch: '',
+    scoreEntryCompId: 'comp-1',
+    scoreEntryLevel: 'ประถมศึกษา (ป.1-3)',
+    scoreEntryRound: 'qualifying',
+    scoreEntryDrafts: {},
     judgeScoringRound: 'qualifying',
     editingCriterionIdx: null,
     editingScheduleKey: null,
@@ -77,7 +88,9 @@
     editingSchoolId: null,
     editingJudgeId: null,
     editingJudgePhotoDraft: '',
+    editingJudgeSchoolId: '',
     editingManagerId: null,
+    editingRegistrarId: null,
   };
 
   function resetRegForm(compId) {
@@ -154,6 +167,7 @@
     state.schools = Array.isArray(s.schools) ? s.schools : [];
     state.judges = Array.isArray(s.judges) ? s.judges : [];
     state.managers = Array.isArray(s.managers) ? s.managers : [];
+    state.registrars = Array.isArray(s.registrars) ? s.registrars : [];
     state.schedules = s.schedules || {};
     state.registrations = Array.isArray(s.registrations) ? s.registrations : [];
     state.scores = s.scores || {};
@@ -163,6 +177,7 @@
     state.checkIns = s.checkIns || {};
     state.evalMeta = s.evalMeta || {};
     state.absentRegs = s.absentRegs || {};
+    state.recusedJudges = s.recusedJudges || {};
     state.customCriteriaByComp = s.customCriteriaByComp || {};
     state.storageStats = s.storageStats || null;
   }
@@ -257,6 +272,10 @@
     return state.managers.find(function (m) { return m.id === id; }) || null;
   }
 
+  function getRegistrar(id) {
+    return state.registrars.find(function (r) { return r.id === id; }) || null;
+  }
+
   function getCurrentSchool() {
     return state.authSession.role === 'school' ? getSchool(state.authSession.schoolId) : null;
   }
@@ -303,8 +322,9 @@
     const finalScores = rs.final || {};
     const hasFinalMap = Object.keys(finalScores).length > 0;
     const qualScores = rs.qualifying || (!hasFinalMap ? (state.scores[regId] || {}) : {});
-    const qualifyingCalc = P.calculateNormalizedScore(qualScores);
-    const finalCalc = P.calculateNormalizedScore(finalScores);
+    const recused = state.recusedJudges[regId] || null;
+    const qualifyingCalc = P.calculateNormalizedScore(qualScores, recused);
+    const finalCalc = P.calculateNormalizedScore(finalScores, recused);
     const activeRound = finalCalc.judgeCount > 0 ? 'final' : (qualifyingCalc.judgeCount > 0 ? 'qualifying' : null);
     const activeRoundLabel = activeRound === 'final' ? 'รอบตัดสิน' : (activeRound === 'qualifying' ? 'รอบคัดเลือก' : '');
     return {
@@ -328,7 +348,7 @@
         .map(function (reg, idx) {
           const isAbsent = Boolean(state.absentRegs[reg.id]);
           const rawScores = isAbsent ? {} : (state.scores[reg.id] || {});
-          const calc = isAbsent ? { average100: 0, judgeCount: 0 } : P.calculateNormalizedScore(rawScores);
+          const calc = isAbsent ? { average100: 0, judgeCount: 0 } : P.calculateNormalizedScore(rawScores, state.recusedJudges[reg.id]);
           const hasScore = !isAbsent && calc.judgeCount > 0;
           const roundInfo = getRoundBreakdown(compId, reg.id);
           return {
@@ -523,10 +543,10 @@
   function getMenuItems() {
     const role = state.authSession.role;
     const all = [
-      { id: 'home', baseLabel: 'หน้าแรก', icon: '🏠', roles: ['guest', 'admin', 'manager', 'school', 'judge'] },
-      { id: 'register', baseLabel: 'ระบบสมัครแข่งขัน', icon: state.registrationOpen ? '📝' : '🔒', roles: ['guest', 'admin', 'manager', 'school'] },
-      { id: 'competitions', baseLabel: 'รายการแข่งขัน', icon: '📋', roles: ['guest', 'admin', 'manager', 'school', 'judge'] },
-      { id: 'schedule', baseLabel: 'ตารางการแข่งขัน', icon: '📅', roles: ['guest', 'admin', 'manager', 'school', 'judge'] },
+      { id: 'home', baseLabel: 'หน้าแรก', icon: '🏠', roles: ['guest', 'admin', 'manager', 'registrar', 'school', 'judge'] },
+      { id: 'register', baseLabel: 'ระบบสมัครแข่งขัน', icon: state.registrationOpen ? '📝' : '🔒', roles: ['guest', 'admin', 'manager', 'registrar', 'school'] },
+      { id: 'competitions', baseLabel: 'รายการแข่งขัน', icon: '📋', roles: ['guest', 'admin', 'manager', 'registrar', 'school', 'judge'] },
+      { id: 'schedule', baseLabel: 'ตารางการแข่งขัน', icon: '📅', roles: ['guest', 'admin', 'manager', 'registrar', 'school', 'judge'] },
       { id: 'by-school', baseLabel: 'รายชื่อแยกตามโรงเรียน', icon: '🏫', roles: ['admin', 'school'] },
       { id: 'by-activity', baseLabel: 'รายชื่อแยกตามกิจกรรม', icon: '🗂', roles: ['admin', 'school'] },
       { id: 'student-card', baseLabel: 'พิมพ์บัตรผู้เข้าแข่งขัน', icon: '🪪', roles: ['admin', 'school'] },
@@ -535,12 +555,14 @@
       { id: 'judge-cert', baseLabel: 'เกียรติบัตรกรรมการ', icon: '🏅', roles: ['admin', 'manager', 'judge'] },
       { id: 'school-cert', baseLabel: 'เกียรติบัตรนักเรียน/ครู/ผอ.โรงเรียน', icon: '🏅', roles: ['admin', 'school'] },
       { id: 'school-results', baseLabel: 'ผลคะแนนของโรงเรียน', icon: '🏆', roles: ['admin', 'school'] },
-      { id: 'results', baseLabel: 'ประกาศผลคะแนน', icon: '🏆', roles: ['guest', 'admin', 'manager', 'judge'] },
+      { id: 'results', baseLabel: 'ประกาศผลคะแนน', icon: '🏆', roles: ['guest', 'admin', 'manager', 'registrar', 'judge'] },
+      { id: 'competition-checkin', baseLabel: 'ลงทะเบียนเข้าร่วมแข่งขัน', icon: '✅', roles: ['admin', 'manager', 'registrar'] },
+      { id: 'score-entry', baseLabel: 'บันทึกผลคะแนนการแข่งขัน', icon: '📝', roles: ['admin', 'manager'] },
       { id: 'admin-competition-manage', baseLabel: 'การจัดการแข่งขัน', icon: '📄', roles: ['admin', 'manager'] },
       { id: 'admin-manage', baseLabel: 'จัดการระบบ (Admin)', icon: '🛡', roles: ['admin'] },
       { id: 'judge-scoring', baseLabel: 'ลงคะแนนตัดสิน (กรรมการ)', icon: '⚖', roles: ['judge'] },
       { id: 'judge-absent', baseLabel: 'แจ้งไม่เข้าร่วมแข่งขัน', icon: '🚫', roles: ['judge'] },
-      { id: 'login', baseLabel: role === 'guest' ? 'เข้าสู่ระบบ' : 'เปลี่ยนบัญชี/เข้าสู่ระบบ', icon: '🔑', roles: ['guest', 'admin', 'manager', 'school', 'judge'] },
+      { id: 'login', baseLabel: role === 'guest' ? 'เข้าสู่ระบบ' : 'เปลี่ยนบัญชี/เข้าสู่ระบบ', icon: '🔑', roles: ['guest', 'admin', 'manager', 'registrar', 'school', 'judge'] },
     ];
     return all
       .filter(function (item) { return item.roles.indexOf(role) !== -1; })
@@ -583,7 +605,7 @@
     document.getElementById('btnCloseMenuModal').onclick = function () { container.innerHTML = ''; };
   }
 
-  function openConfirmModal(title, message, onConfirm) {
+  function openConfirmModal(title, message, onConfirm, confirmLabel) {
     const container = document.getElementById('modalContainer');
     if (!container) return;
     container.innerHTML =
@@ -597,7 +619,7 @@
             '<p style="margin:0;font-size:14px;color:#334155;">' + esc(message) + '</p>' +
             '<div class="row-wrap" style="justify-content:flex-end;">' +
               '<button type="button" class="btn btn-outline btn-sm" id="btnConfirmCancel">ยกเลิก</button>' +
-              '<button type="button" class="btn btn-rose-solid btn-sm" id="btnConfirmOk">ยืนยันการลบ</button>' +
+              '<button type="button" class="btn btn-rose-solid btn-sm" id="btnConfirmOk">' + esc(confirmLabel || 'ยืนยันการลบ') + '</button>' +
             '</div>' +
           '</div>' +
         '</div>' +
@@ -613,7 +635,7 @@
   }
 
   function selectMenu(menuId) {
-    const isLoginRoute = menuId === 'login' || menuId === 'login-admin' || menuId === 'login-manager' || menuId === 'login-school' || menuId === 'login-judge';
+    const isLoginRoute = menuId === 'login' || menuId === 'login-admin' || menuId === 'login-manager' || menuId === 'login-registrar' || menuId === 'login-school' || menuId === 'login-judge';
     if (state.authSession.role === 'manager' && MANAGER_ALLOWED_MENUS.indexOf(menuId) === -1 && !isLoginRoute) {
       state.topLoginMenuOpen = false;
       state.activeMenu = 'admin-competition-manage';
@@ -621,9 +643,17 @@
       renderAll();
       return;
     }
+    if (state.authSession.role === 'registrar' && REGISTRAR_ALLOWED_MENUS.indexOf(menuId) === -1 && !isLoginRoute) {
+      state.topLoginMenuOpen = false;
+      state.activeMenu = 'competition-checkin';
+      state.mobileMenuOpen = false;
+      renderAll();
+      return;
+    }
     if (
       state.authSession.role !== 'admin' &&
       state.authSession.role !== 'manager' &&
+      state.authSession.role !== 'registrar' &&
       Object.prototype.hasOwnProperty.call(state.menuPermissions, menuId) &&
       !state.menuPermissions[menuId]
     ) {
@@ -640,6 +670,7 @@
       state.topLoginMenuOpen = false;
       if (menuId === 'login-admin') state.loginTab = 'admin';
       else if (menuId === 'login-manager') state.loginTab = 'manager';
+      else if (menuId === 'login-registrar') state.loginTab = 'registrar';
       else if (menuId === 'login-school') state.loginTab = 'school';
       else if (menuId === 'login-judge') state.loginTab = 'judge';
     } else {
@@ -922,12 +953,22 @@
       }
       let judgeCell = '';
       if (isAdmin) {
+        const regRecused = state.recusedJudges[item.reg.id] || {};
+        const judgeParts = Object.entries(item.judgeScores || {})
+          .filter(function (pair) { return !regRecused[pair[0]]; })
+          .map(function (pair) {
+            const jObj = getJudge(pair[0]);
+            return esc(jObj ? jObj.name : pair[0]) + ': ' + esc(pair[1]);
+          });
+        Object.keys(regRecused).forEach(function (jId) {
+          if (regRecused[jId]) {
+            const jObj = getJudge(jId);
+            judgeParts.push(esc(jObj ? jObj.name : jId) + ': งดเว้น (โรงเรียนตน)');
+          }
+        });
         const jText = item.isAbsent
           ? '<span style="color:#be123c;font-weight:700;">แจ้งไม่เข้าร่วมแข่งขัน</span>'
-          : (Object.entries(item.judgeScores || {}).map(function (pair) {
-              const jObj = getJudge(pair[0]);
-              return esc(jObj ? jObj.name : pair[0]) + ': ' + esc(pair[1]);
-            }).join(' | ') || 'ยังไม่มีคะแนน');
+          : (judgeParts.join(' | ') || 'ยังไม่มีคะแนน');
         judgeCell = '<td style="padding:8px;border:1px solid #cbd5e1;font-size:12px;">' + jText + '</td>';
       }
       let roundNote = '';
@@ -1081,13 +1122,14 @@
   function printAdminSheet(mode, targetCompId, targetLevel) {
     const comps = state.competitions.filter(function (c) { return targetCompId === 'all' || c.id === targetCompId; });
     const sheets = [];
-    const useWide = mode === 'score';
+    const useWide = mode === 'score' || mode === 'combined-judge';
     comps.forEach(function (comp) {
       const levels = targetLevel === 'ทั้งหมด' ? comp.levels : comp.levels.filter(function (l) { return l === targetLevel; });
+      const isTwoRound = isTwoRoundComp(comp.id);
       levels.forEach(function (lvl) {
-        const regs = state.registrations.filter(function (r) { return r.competitionId === comp.id && r.level === lvl; });
-        if (regs.length === 0) return;
-        const sched = state.schedules[comp.id + '__' + lvl] || { venue: '-', timeRange: '-' };
+        const regs = state.registrations.filter(function (r) { return r.competitionId === comp.id && String(r.level || '').trim() === lvl.trim(); });
+        if (regs.length === 0 && mode !== 'combined-judge') return;
+        const sched = state.schedules[comp.id + '__' + lvl] || { venue: '-', timeRange: '08.30 น. เป็นต้นไป' };
         if (mode === 'register') {
           const rows = regs.map(function (r, idx) {
             const sch = getSchool(r.schoolId);
@@ -1096,6 +1138,97 @@
             return '<tr><td style="padding:8px;border:1px solid #cbd5e1;text-align:center;">' + (idx + 1) + '</td><td style="padding:8px;border:1px solid #cbd5e1;">' + esc(sch ? sch.name : '-') + '</td><td style="padding:8px;border:1px solid #cbd5e1;">' + stText + '</td><td style="padding:8px;border:1px solid #cbd5e1;">' + coText + '</td><td style="padding:8px;border:1px solid #cbd5e1;width:90px;"></td></tr>';
           }).join('');
           sheets.push('<div class="page-break" style="width:210mm;min-height:297mm;background:#fff;padding:24px;"><div style="text-align:center;border-bottom:2px solid #059669;padding-bottom:10px;margin-bottom:14px;"><h2 style="margin:0;">แบบลงทะเบียนผู้เข้าแข่งขัน (ใบเซ็นชื่อ)</h2><div style="font-size:14px;font-weight:700;">' + esc(comp.name) + ' • ' + esc(lvl) + '</div><div style="font-size:12px;color:#475569;">สถานที่: ' + esc(sched.venue) + ' | เวลา: ' + esc(sched.timeRange) + '</div></div><table style="width:100%;border-collapse:collapse;font-size:12.5px;"><thead><tr style="background:#d1fae5;"><th style="padding:8px;border:1px solid #cbd5e1;text-align:center;">ที่</th><th style="padding:8px;border:1px solid #cbd5e1;text-align:left;">โรงเรียน</th><th style="padding:8px;border:1px solid #cbd5e1;text-align:left;">รายชื่อผู้เข้าแข่งขัน</th><th style="padding:8px;border:1px solid #cbd5e1;text-align:left;">ครูผู้ฝึกสอน</th><th style="padding:8px;border:1px solid #cbd5e1;text-align:center;">ลงลายมือชื่อ</th></tr></thead><tbody>' + rows + '</tbody></table></div>');
+        } else if (mode === 'combined-judge') {
+          const levelJudges = state.judges.filter(function (j) {
+            return j.competitionId === comp.id && String(j.level || '').trim() === lvl.trim();
+          });
+          if (regs.length === 0 && levelJudges.length === 0) return;
+          const rankedList = buildCompetitionRankedList(comp.id, lvl);
+          const rankByRegId = {};
+          rankedList.forEach(function (e) { rankByRegId[e.reg.id] = e; });
+          const judgeColsHtml = levelJudges.length > 0
+            ? levelJudges.map(function (j, jIdx) {
+                return '<th style="padding:6px 4px;border:1px solid #94a3b8;min-width:24mm;text-align:center;font-size:10.5px;">กรรมการ ' + (jIdx + 1) + '<br/><span style="font-weight:500;font-size:9.5px;">' + esc(j.name) + '</span></th>';
+              }).join('')
+            : '<th style="padding:6px 4px;border:1px solid #94a3b8;min-width:28mm;text-align:center;">ยังไม่มีรายชื่อกรรมการ</th>';
+          const rowsHtml = regs.map(function (r, idx) {
+            const sch = getSchool(r.schoolId);
+            const isAbsent = Boolean(state.absentRegs[r.id]);
+            const rankedEntry = rankByRegId[r.id];
+            const rInfo = rankedEntry ? rankedEntry.roundInfo : null;
+            const studentList = (r.students || []).map(function (s) { return esc(s.name); }).join('<br/>');
+            const judgeCells = levelJudges.length > 0
+              ? levelJudges.map(function (j) {
+                  if (isAbsent) return '<td style="padding:6px 4px;border:1px solid #94a3b8;text-align:center;color:#be123c;font-size:10px;">ไม่เข้าร่วม</td>';
+                  if (state.recusedJudges[r.id] && state.recusedJudges[r.id][j.id]) {
+                    return '<td style="padding:6px 4px;border:1px solid #94a3b8;text-align:center;background:#fffbeb;color:#b45309;font-size:9.5px;font-weight:700;">งดเว้น<br/>(โรงเรียนตน)</td>';
+                  }
+                  if (isTwoRound) {
+                    const rs = state.roundScores[r.id] || {};
+                    const hasRoundStore = Boolean(state.roundScores[r.id]);
+                    const qScore = (rs.qualifying && rs.qualifying[j.id] !== undefined) ? rs.qualifying[j.id] : (!hasRoundStore && state.scores[r.id] ? state.scores[r.id][j.id] : undefined);
+                    const fScore = rs.final ? rs.final[j.id] : undefined;
+                    const parts = [];
+                    if (typeof qScore === 'number') parts.push('ค:' + qScore.toFixed(0));
+                    if (typeof fScore === 'number') parts.push('ต:' + fScore.toFixed(0));
+                    return '<td style="padding:6px 4px;border:1px solid #94a3b8;text-align:center;font-weight:600;font-size:10.5px;">' + (parts.length > 0 ? parts.join(' / ') : '-') + '</td>';
+                  }
+                  const sc = state.scores[r.id] ? state.scores[r.id][j.id] : undefined;
+                  return '<td style="padding:6px 4px;border:1px solid #94a3b8;text-align:center;font-weight:600;">' + (typeof sc === 'number' ? sc.toFixed(2) : '-') + '</td>';
+                }).join('')
+              : '<td style="padding:6px 4px;border:1px solid #94a3b8;text-align:center;">-</td>';
+            const avgCell = isAbsent
+              ? '<span style="color:#be123c;font-size:10px;">ไม่เข้าร่วม</span>'
+              : (rankedEntry && rankedEntry.hasScore
+                ? rankedEntry.score.toFixed(2) + (isTwoRound && rInfo && rInfo.activeRoundLabel ? '<div style="font-size:9px;color:#0369a1;">(' + esc(rInfo.activeRoundLabel) + ')</div>' : '')
+                : '-');
+            const awardText = isAbsent
+              ? 'ไม่เข้าร่วม'
+              : (rankedEntry && rankedEntry.hasScore && rankedEntry.rankNum
+                ? getRankAwardLabel(rankedEntry.rankNum, false, true, 'อันดับ')
+                : '-');
+            return '<tr style="background:' + (idx % 2 === 0 ? '#ffffff' : '#f8fafc') + ';">' +
+              '<td style="padding:6px 4px;border:1px solid #94a3b8;text-align:center;font-weight:700;">' + (idx + 1) + '</td>' +
+              '<td style="padding:6px 6px;border:1px solid #94a3b8;font-weight:600;">' + esc(sch ? sch.name : '-') + '</td>' +
+              '<td style="padding:6px 6px;border:1px solid #94a3b8;font-size:11px;">' + (studentList || '-') + '</td>' +
+              judgeCells +
+              '<td style="padding:6px 4px;border:1px solid #94a3b8;text-align:center;font-weight:800;color:#065f46;">' + avgCell + '</td>' +
+              '<td style="padding:6px 4px;border:1px solid #94a3b8;text-align:center;font-size:10.5px;font-weight:700;">' + esc(awardText) + '</td>' +
+            '</tr>';
+          }).join('');
+          const signBlocks = levelJudges.length > 0
+            ? levelJudges.map(function (j) {
+                return '<div style="text-align:center;width:31%;margin-bottom:10px;">' +
+                  '<div>ลงชื่อ................................................</div>' +
+                  '<div style="margin-top:3px;font-weight:700;">(' + esc(j.name) + ')</div>' +
+                  '<div style="font-size:10.5px;color:#334155;">' + esc(j.position || 'กรรมการตัดสิน') + '</div>' +
+                '</div>';
+              }).join('')
+            : '<div style="text-align:center;width:45%;"><div>ลงชื่อ................................................ประธานกรรมการ</div><div style="margin-top:4px;">(................................................)</div></div>';
+          sheets.push(
+            '<div class="page-break" style="width:297mm;min-height:210mm;background:#fff;padding:16px 20px;border:1px solid #e2e8f0;display:flex;flex-direction:column;justify-content:space-between;">' +
+              '<div>' +
+                '<div style="text-align:center;border-bottom:2px solid #0f766e;padding-bottom:8px;margin-bottom:10px;">' +
+                  '<div style="font-size:16px;font-weight:700;color:#115e59;">ใบลงคะแนนรวมของคณะกรรมการตัดสินทั้งหมด</div>' +
+                  '<div style="font-size:13px;font-weight:700;margin-top:2px;">' + esc(state.eventMeta.titleTh || '') + '</div>' +
+                  '<div style="font-size:12px;color:#334155;margin-top:2px;">กิจกรรม: <strong>' + esc(comp.name) + '</strong> (' + esc(comp.type) + ') • ระดับ: <strong>' + esc(lvl) + '</strong></div>' +
+                  '<div style="font-size:11px;color:#475569;margin-top:2px;">' + esc(state.eventMeta.dateTh || '') + ' • สถานที่: ' + esc(sched.venue) + ' • เวลา: ' + esc(sched.timeRange) + '</div>' +
+                '</div>' +
+                '<table style="width:100%;border-collapse:collapse;font-size:11px;">' +
+                  '<thead><tr style="background:#ccfbf1;color:#134e4a;">' +
+                    '<th style="padding:6px 4px;border:1px solid #94a3b8;width:9mm;">ที่</th>' +
+                    '<th style="padding:6px 6px;border:1px solid #94a3b8;">โรงเรียน</th>' +
+                    '<th style="padding:6px 6px;border:1px solid #94a3b8;">ผู้เข้าแข่งขัน</th>' +
+                    judgeColsHtml +
+                    '<th style="padding:6px 4px;border:1px solid #94a3b8;width:22mm;text-align:center;">คะแนนเฉลี่ย<br/>(เต็ม ๑๐๐)</th>' +
+                    '<th style="padding:6px 4px;border:1px solid #94a3b8;width:28mm;text-align:center;">อันดับ / ผล</th>' +
+                  '</tr></thead>' +
+                  '<tbody>' + (rowsHtml || '<tr><td colspan="' + (Math.max(1, levelJudges.length) + 5) + '" style="padding:18px;border:1px solid #94a3b8;text-align:center;color:#64748b;">ยังไม่มีผู้สมัครในระดับชั้นนี้</td></tr>') + '</tbody>' +
+                '</table>' +
+              '</div>' +
+              '<div style="margin-top:14px;border-top:1px dashed #cbd5e1;padding-top:10px;"><div style="display:flex;flex-wrap:wrap;justify-content:center;gap:8px;font-size:11.5px;">' + signBlocks + '</div></div>' +
+            '</div>'
+          );
         } else {
           const crit = getCriteria(comp.id);
           const critHeads = crit.map(function (c) { return '<th style="padding:6px;border:1px solid #cbd5e1;font-size:11px;">' + esc(c.label) + '<br/>(' + esc(c.max) + ')</th>'; }).join('');
@@ -1110,13 +1243,18 @@
       });
     });
     if (sheets.length === 0) { showToast('ไม่พบข้อมูลสำหรับพิมพ์เอกสาร', 'error'); return; }
-    openPreview(mode === 'register' ? 'ใบลงทะเบียนผู้เข้าแข่งขัน' : 'ใบบันทึกคะแนนกรรมการ', sheets.join(''), useWide ? 'A4 landscape' : 'A4 portrait');
+    const docTitle = mode === 'register'
+      ? 'ใบลงทะเบียนผู้เข้าแข่งขัน'
+      : mode === 'combined-judge'
+      ? 'ใบลงคะแนนรวมของคณะกรรมการตัดสินทั้งหมด'
+      : 'ใบบันทึกคะแนนกรรมการ';
+    openPreview(docTitle, sheets.join(''), useWide ? 'A4 landscape' : 'A4 portrait');
   }
 
   // ---------------- Layout Chrome & Navigation ----------------
   function renderLayoutChrome() {
     const role = state.authSession.role;
-    const roleText = role === 'judge' ? 'โหมดกรรมการ' : role === 'admin' ? 'โหมดผู้ดูแลระบบ' : role === 'manager' ? 'โหมดผู้จัดการแข่งขัน' : role === 'school' ? 'โหมดโรงเรียน' : 'ทั่วไป';
+    const roleText = role === 'judge' ? 'โหมดกรรมการ' : role === 'admin' ? 'โหมดผู้ดูแลระบบ' : role === 'manager' ? 'โหมดผู้จัดการแข่งขัน' : role === 'registrar' ? 'โหมดเจ้าหน้าที่ลงทะเบียน' : role === 'school' ? 'โหมดโรงเรียน' : 'ทั่วไป';
     const currentSch = getCurrentSchool();
 
     document.getElementById('topbarDisplayName').textContent = state.authSession.displayName || 'ผู้เยี่ยมชมทั่วไป';
@@ -1135,6 +1273,7 @@
             ? '<div class="topbar-dropdown" id="topLoginDropdown" style="z-index:50;">' +
                 '<button type="button" class="topbar-dropdown-item" data-login-menu="login-admin">🛡 ผู้ดูแลระบบ</button>' +
                 '<button type="button" class="topbar-dropdown-item" data-login-menu="login-manager">📄 ผู้จัดการแข่งขัน</button>' +
+                '<button type="button" class="topbar-dropdown-item" data-login-menu="login-registrar">📋 เจ้าหน้าที่ลงทะเบียน</button>' +
                 '<button type="button" class="topbar-dropdown-item" data-login-menu="login-school">🏫 ระบบโรงเรียน</button>' +
                 '<button type="button" class="topbar-dropdown-item" data-login-menu="login-judge">⚖ ระบบกรรมการ</button>' +
               '</div>'
@@ -1191,11 +1330,12 @@
       btn.onclick = function () { selectMenu(btn.getAttribute('data-menu')); };
     });
 
-    // Sidebar Account Card: สถานะของผู้ใช้ และการเข้าสู่ระบบทั้ง 4 ระบบ
+    // Sidebar Account Card: สถานะของผู้ใช้ และการเข้าสู่ระบบทั้ง 5 ระบบ
     const accEl = document.getElementById('sidebarAccountCard');
-    const avatarIcon = role === 'admin' ? '🛡' : role === 'manager' ? '📄' : role === 'school' ? '🏫' : role === 'judge' ? '⚖' : '👥';
+    const avatarIcon = role === 'admin' ? '🛡' : role === 'manager' ? '📄' : role === 'registrar' ? '📋' : role === 'school' ? '🏫' : role === 'judge' ? '⚖' : '👥';
     const subRoleText = role === 'admin' ? 'ผู้ดูแลระบบ (Admin)'
       : role === 'manager' ? 'ผู้จัดการแข่งขัน'
+      : role === 'registrar' ? 'เจ้าหน้าที่ลงทะเบียน'
       : role === 'school' ? 'โรงเรียน (' + (currentSch ? currentSch.schoolCode : 'School') + ')'
       : role === 'judge' ? 'กรรมการตัดสิน'
       : 'ยังไม่ได้เข้าสู่ระบบ';
@@ -1205,6 +1345,7 @@
       ? '<div class="acc-login-submenu">' +
           '<button type="button" class="nav-subbtn ' + (state.activeMenu === 'login-admin' ? 'active-admin' : '') + '" data-acc-menu="login-admin">🛡 ผู้ดูแลระบบ</button>' +
           '<button type="button" class="nav-subbtn ' + (state.activeMenu === 'login-manager' ? 'active-manager' : '') + '" data-acc-menu="login-manager">📄 ผู้จัดการแข่งขัน</button>' +
+          '<button type="button" class="nav-subbtn ' + (state.activeMenu === 'login-registrar' ? 'active-registrar' : '') + '" data-acc-menu="login-registrar">📋 เจ้าหน้าที่ลงทะเบียน</button>' +
           '<button type="button" class="nav-subbtn ' + (state.activeMenu === 'login-school' ? 'active-school' : '') + '" data-acc-menu="login-school">🏫 ระบบโรงเรียน</button>' +
           '<button type="button" class="nav-subbtn ' + (state.activeMenu === 'login-judge' ? 'active-judge' : '') + '" data-acc-menu="login-judge">⚖ ระบบกรรมการ</button>' +
         '</div>'
@@ -1226,7 +1367,7 @@
         : '') +
       '<div style="padding-top:8px;border-top:1px solid rgba(226,232,240,0.9);display:flex;flex-direction:column;gap:6px;">' +
         '<button type="button" id="btnToggleLoginAccordion" aria-expanded="' + (state.loginMenuExpanded ? 'true' : 'false') + '" style="width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px;border:none;border-radius:10px;background:transparent;font-size:11.5px;font-weight:700;color:#475569;cursor:pointer;">' +
-          '<span>🔑 การเข้าสู่ระบบทั้ง 4 ระบบ</span>' +
+          '<span>🔑 การเข้าสู่ระบบทั้ง 5 ระบบ</span>' +
           '<span>' + (state.loginMenuExpanded ? '▾' : '▸') + '</span>' +
         '</button>' +
         subLoginHtml +
@@ -1310,8 +1451,8 @@
 
   function renderRegister(main) {
     const role = state.authSession.role;
-    if (role !== 'admin' && role !== 'manager' && role !== 'school') {
-      main.innerHTML = '<div class="card" style="text-align:center;padding:40px;"><div style="font-size:32px;">🔒</div><h3>กรุณาเข้าสู่ระบบโรงเรียน ผู้จัดการแข่งขัน หรือผู้ดูแลระบบเพื่อลงทะเบียนแข่งขัน</h3><button type="button" class="btn btn-primary" id="btnNeedLoginReg">เข้าสู่ระบบโรงเรียน</button></div>';
+    if (role !== 'admin' && role !== 'manager' && role !== 'registrar' && role !== 'school') {
+      main.innerHTML = '<div class="card" style="text-align:center;padding:40px;"><div style="font-size:32px;">🔒</div><h3>กรุณาเข้าสู่ระบบโรงเรียน เจ้าหน้าที่ลงทะเบียน ผู้จัดการแข่งขัน หรือผู้ดูแลระบบเพื่อลงทะเบียนแข่งขัน</h3><button type="button" class="btn btn-primary" id="btnNeedLoginReg">เข้าสู่ระบบโรงเรียน</button></div>';
       document.getElementById('btnNeedLoginReg').onclick = function () { selectMenu('login-school'); };
       return;
     }
@@ -1383,7 +1524,7 @@
           '</div>' +
           '<form id="regFormEl" class="stack">' +
             '<div class="grid-2">' +
-              ((role === 'admin' || role === 'manager')
+              ((role === 'admin' || role === 'manager' || role === 'registrar')
                 ? '<div style="grid-column:1 / -1;"><label class="field-label">เลือกโรงเรียน</label><select class="select" id="regSchoolSel">' +
                     state.schools.map(function (s) { return '<option value="' + esc(s.id) + '"' + (s.id === targetSchoolId ? ' selected' : '') + '>[' + esc(s.schoolCode) + '] ' + esc(s.name) + '</option>'; }).join('') +
                   '</select></div>'
@@ -2073,6 +2214,18 @@
 
   function renderResults(main) {
     const isAdmin = state.authSession.role === 'admin';
+    const isAdminOrManager = isAdmin || state.authSession.role === 'manager';
+    const judgeCompletedPendingList = [];
+    state.competitions.forEach(function (c) {
+      c.levels.forEach(function (lvl) {
+        const key = c.id + '__' + lvl;
+        const meta = state.evalMeta[key] || { status: 'pending', approved: false };
+        if (meta.judgeCompleted && !meta.approved) {
+          judgeCompletedPendingList.push({ comp: c, level: lvl, key: key, meta: meta });
+        }
+      });
+    });
+
     function getFilteredResultRows() {
       const pairs = [];
       state.competitions.forEach(function (c) {
@@ -2080,7 +2233,7 @@
           const key = c.id + '__' + lvl;
           const meta = state.evalMeta[key] || { status: 'pending', approved: false };
           const regs = state.registrations.filter(function (r) { return r.competitionId === c.id && r.level === lvl; });
-          const scored = regs.filter(function (r) { return !state.absentRegs[r.id] && P.calculateNormalizedScore(state.scores[r.id]).judgeCount > 0; }).length;
+          const scored = regs.filter(function (r) { return !state.absentRegs[r.id] && P.calculateNormalizedScore(state.scores[r.id], state.recusedJudges[r.id]).judgeCount > 0; }).length;
           if (state.resultsSearch && (c.name + ' ' + lvl).toLowerCase().indexOf(state.resultsSearch.toLowerCase()) === -1) return;
           if (state.resultsApprovalFilter === 'approved' && !meta.approved) return;
           if (state.resultsApprovalFilter === 'pending' && meta.approved) return;
@@ -2088,12 +2241,17 @@
         });
       });
       return pairs.map(function (p) {
+        const statusBadge = p.meta.approved
+          ? '<span class="badge badge-emerald">อนุมัติแล้ว</span>'
+          : (p.meta.judgeCompleted
+            ? '<span class="badge badge-sky" title="' + esc(p.meta.judgeCompletedBy ? ('แจ้งโดย ' + p.meta.judgeCompletedBy) : '') + '">กรรมการตัดสินครบแล้ว รออนุมัติ</span>'
+            : '<span class="badge badge-amber">รอการอนุมัติ</span>');
         return '<tr>' +
           '<td><strong>' + esc(p.comp.name) + '</strong></td>' +
           '<td>' + esc(p.level) + '</td>' +
           '<td style="text-align:center;">' + p.teamsCount + '</td>' +
           '<td style="text-align:center;">' + p.scoredCount + '</td>' +
-          '<td>' + (p.meta.approved ? '<span class="badge badge-emerald">อนุมัติแล้ว</span>' : '<span class="badge badge-amber">รอการอนุมัติ</span>') + '</td>' +
+          '<td>' + statusBadge + '</td>' +
           '<td style="white-space:nowrap;">' +
             '<button type="button" class="btn btn-outline btn-xs res-view" data-comp="' + esc(p.comp.id) + '" data-lvl="' + esc(p.level) + '">👁 ดูผลการแข่งขัน</button> ' +
             (isAdmin ? '<button type="button" class="btn ' + (p.meta.approved ? 'btn-rose' : 'btn-primary') + ' btn-xs res-approve" data-key="' + esc(p.key) + '" data-next="' + (!p.meta.approved ? '1' : '0') + '">' + (p.meta.approved ? 'ยกเลิกอนุมัติ' : '✓ อนุมัติผล') + '</button>' : '') +
@@ -2117,8 +2275,20 @@
       });
     }
 
+    const alertHtml = (isAdminOrManager && judgeCompletedPendingList.length > 0)
+      ? '<div class="card-compact stack-sm" style="border-color:#99f6e4;background:#f0fdfa;">' +
+          '<div style="font-size:13.5px;font-weight:700;color:#0f766e;">🔔 แจ้งเตือน: ประธานกรรมการตัดสินแจ้งการตัดสินเสร็จสมบูรณ์ครบทุกโรงเรียนแล้ว (' + judgeCompletedPendingList.length + ' รายการ รอผู้ดูแลระบบอนุมัติผล)</div>' +
+          '<div class="row-wrap">' +
+            judgeCompletedPendingList.map(function (item) {
+              return '<span class="badge badge-sky" style="background:#fff;border:1px solid #99f6e4;">' + esc(item.comp.name) + ' (' + esc(item.level) + ')' + (item.meta.judgeCompletedBy ? ' • โดย ' + esc(item.meta.judgeCompletedBy) : '') + '</span>';
+            }).join('') +
+          '</div>' +
+        '</div>'
+      : '';
+
     main.innerHTML =
       '<div class="stack">' +
+        alertHtml +
         '<div class="card row-between">' +
           '<div><h2 style="margin:0;">🏆 ประกาศผลคะแนนการแข่งขัน</h2></div>' +
           '<div class="row-wrap">' +
@@ -2218,24 +2388,346 @@
     document.getElementById('btnPrintFromResModal').onclick = function () { printResultsReport(compId, level); };
   }
 
-  function renderAdminCompManage(main) {
-    if (state.authSession.role !== 'admin' && state.authSession.role !== 'manager') { main.innerHTML = '<div class="card">สำหรับผู้ดูแลระบบหรือผู้จัดการแข่งขันเท่านั้น</div>'; return; }
+  function renderCompetitionCheckin(main) {
+    if (state.authSession.role !== 'admin' && state.authSession.role !== 'manager' && state.authSession.role !== 'registrar') {
+      main.innerHTML = '<div class="card">สำหรับผู้ดูแลระบบ ผู้จัดการแข่งขัน หรือเจ้าหน้าที่ลงทะเบียนเท่านั้น</div>';
+      return;
+    }
     const comp = getComp(state.adminCompManageId) || state.competitions[0];
     if (!state.compManageRegForm) resetCompManageRegForm(comp.id, state.adminCompManageLevel);
-    const crit = getCriteria(comp.id);
     const compRegs = state.registrations.filter(function (r) {
       return r.competitionId === comp.id && (state.adminCompManageLevel === 'ทั้งหมด' || r.level === state.adminCompManageLevel);
     });
     const checkedInCount = compRegs.filter(function (r) { return isRegCheckedIn(r.id); }).length;
     const absentCompCount = compRegs.filter(function (r) { return Boolean(state.absentRegs[r.id]); }).length;
-    const pendingCount = Math.max(0, compRegs.length - checkedInCount - absentCompCount);
+    const pendingRegs = compRegs.filter(function (r) { return !isRegCheckedIn(r.id) && !state.absentRegs[r.id]; });
+    const pendingCount = pendingRegs.length;
+    const anyPendingApproved = pendingRegs.some(function (r) { return Boolean((state.evalMeta[r.competitionId + '__' + r.level] || {}).approved); });
+
+    const rf = state.compManageRegForm;
+    const stuInputs = rf.students.map(function (st, idx) {
+      const thumb = safeImg(st.photoUrl);
+      return '<div class="card-compact stack-sm" style="background:#f8fafc;">' +
+        '<div class="row-between" style="gap:8px;">' +
+          '<input type="text" class="input cm-stu-name" data-idx="' + idx + '" value="' + esc(st.name) + '" placeholder="ชื่อ-นามสกุล นักเรียนคนที่ ' + (idx + 1) + '" required />' +
+          (rf.students.length > 1 ? '<button type="button" class="btn btn-rose btn-xs cm-stu-del" data-idx="' + idx + '">ลบ</button>' : '') +
+        '</div>' +
+        '<div class="row-between" style="font-size:12px;">' +
+          '<label style="cursor:pointer;color:#047857;font-weight:700;">📷 ' + (thumb ? 'เปลี่ยนรูป' : 'อัปโหลดรูป') + '<input type="file" accept="image/*" class="hidden cm-stu-photo" data-idx="' + idx + '" /></label>' +
+          (thumb ? '<img src="' + thumb + '" alt="" style="width:32px;height:32px;border-radius:6px;object-fit:cover;" />' : '') +
+        '</div>' +
+      '</div>';
+    }).join('');
+    const coachInputs = rf.coaches.map(function (c, idx) {
+      const cThumb = safeImg(c.photoUrl);
+      return '<div class="card-compact stack-sm" style="background:#f8fafc;">' +
+        '<div class="row-between" style="gap:8px;">' +
+          '<input type="text" class="input cm-coach-name" data-idx="' + idx + '" value="' + esc(c.name) + '" placeholder="ชื่อ-นามสกุล ครูผู้ฝึกสอนท่านที่ ' + (idx + 1) + '" />' +
+          (rf.coaches.length > 1 ? '<button type="button" class="btn btn-rose btn-xs cm-coach-del" data-idx="' + idx + '">ลบ</button>' : '') +
+        '</div>' +
+        '<div class="row-between" style="font-size:12px;">' +
+          '<label style="cursor:pointer;color:#047857;font-weight:700;">📷 ' + (cThumb ? 'เปลี่ยนรูป' : 'อัปโหลดรูป') + '<input type="file" accept="image/*" class="hidden cm-coach-photo" data-idx="' + idx + '" /></label>' +
+          (cThumb ? '<img src="' + cThumb + '" alt="" style="width:32px;height:32px;border-radius:6px;object-fit:cover;" />' : '') +
+        '</div>' +
+      '</div>';
+    }).join('');
+
+    const q = (state.compManageCheckinSearch || '').trim().toLowerCase();
+    const filteredRegs = compRegs.filter(function (r) {
+      const isAbs = Boolean(state.absentRegs[r.id]);
+      const isChk = isRegCheckedIn(r.id);
+      const stKey = isAbs ? 'absent' : (isChk ? 'checked_in' : 'pending');
+      if (state.compManageCheckinFilter !== 'all' && stKey !== state.compManageCheckinFilter) return false;
+      if (!q) return true;
+      const sch = getSchool(r.schoolId);
+      const txt = ((sch ? sch.name : '') + ' ' + r.level + ' ' + (r.students || []).map(function (s) { return s.name; }).join(' ')).toLowerCase();
+      return txt.indexOf(q) !== -1;
+    });
+
+    let regListHtml = '';
+    if (state.compManageRegMode === 'school') {
+      const schoolBuckets = {};
+      filteredRegs.forEach(function (r) {
+        if (!schoolBuckets[r.schoolId]) schoolBuckets[r.schoolId] = [];
+        schoolBuckets[r.schoolId].push(r);
+      });
+      const schoolGroups = Object.keys(schoolBuckets).map(function (sId) {
+        return { school: getSchool(sId) || { id: sId, name: 'ไม่ระบุโรงเรียน', schoolCode: '-' }, regs: schoolBuckets[sId] };
+      });
+      regListHtml = schoolGroups.length === 0
+        ? '<div style="text-align:center;padding:24px;color:#94a3b8;">ไม่พบข้อมูลโรงเรียนที่มีทีมสมัครในเงื่อนไขที่เลือก</div>'
+        : '<div class="stack">' + schoolGroups.map(function (grp) {
+            const sch = grp.school;
+            const regs = grp.regs;
+            const schChk = regs.filter(function (r) { return isRegCheckedIn(r.id); }).length;
+            const schAbs = regs.filter(function (r) { return Boolean(state.absentRegs[r.id]); }).length;
+            const schPend = Math.max(0, regs.length - schChk - schAbs);
+            const anyApproved = regs.some(function (r) { return Boolean((state.evalMeta[r.competitionId + '__' + r.level] || {}).approved); });
+            const teamItems = regs.map(function (r) {
+              const isAbs = Boolean(state.absentRegs[r.id]);
+              const isChk = isRegCheckedIn(r.id);
+              const metaApproved = Boolean((state.evalMeta[r.competitionId + '__' + r.level] || {}).approved);
+              return '<div class="row-between" style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;">' +
+                '<div>' +
+                  '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">' +
+                    '<span class="badge badge-slate">' + esc(r.level) + '</span>' +
+                    (isAbs ? '<span class="badge badge-rose">ไม่เข้าร่วมแข่งขัน</span>' : (isChk ? '<span class="badge badge-emerald">ลงทะเบียนแล้ว</span>' : '<span class="badge badge-amber">รอลงทะเบียน</span>')) +
+                  '</div>' +
+                  '<div style="font-size:13px;font-weight:600;margin-top:4px;">' + esc((r.students || []).map(function (s) { return s.name; }).join(', ') || '-') + '</div>' +
+                '</div>' +
+                '<div class="row-wrap">' +
+                  (!isChk
+                    ? '<button type="button" class="btn btn-primary btn-xs cm-chk" data-id="' + esc(r.id) + '" data-st="checked_in">ลงทะเบียนเข้าร่วม</button>'
+                    : '<button type="button" class="btn btn-amber btn-xs cm-chk" data-id="' + esc(r.id) + '" data-st="pending">ยกเลิกการลงทะเบียน</button>') +
+                  (isAbs ? '<button type="button" class="btn btn-amber btn-xs cm-chk" data-id="' + esc(r.id) + '" data-st="pending">ยกเลิกไม่เข้าร่วม</button>' : '') +
+                  '<button type="button" class="btn btn-outline btn-xs cm-edit" data-id="' + esc(r.id) + '">✏</button>' +
+                  '<button type="button" class="btn btn-rose btn-xs cm-del" data-id="' + esc(r.id) + '"' + (metaApproved ? ' disabled' : '') + '>ถอนทีม</button>' +
+                '</div>' +
+              '</div>';
+            }).join('');
+            return '<div class="card-compact stack-sm" style="background:#f8fafc;">' +
+              '<div class="row-between">' +
+                '<div><strong>' + esc(sch.name) + '</strong> <span class="badge badge-slate">รหัส ' + esc(sch.schoolCode) + '</span> <span class="badge badge-amber">ทั้งหมด ' + regs.length + ' ทีม (เข้าร่วมแล้ว ' + schChk + ' • รอ ' + schPend + (schAbs > 0 ? ' • ไม่ร่วม ' + schAbs : '') + ')</span></div>' +
+                '<div class="row-wrap">' +
+                  '<button type="button" class="btn btn-primary btn-xs cm-sch-chk" data-sch="' + esc(sch.id) + '" data-st="checked_in">ลงทะเบียนทั้งโรงเรียน</button>' +
+                  '<button type="button" class="btn btn-amber btn-xs cm-sch-chk" data-sch="' + esc(sch.id) + '" data-st="pending">ยกเลิกการลงทะเบียนทั้งโรงเรียน</button>' +
+                  '<button type="button" class="btn btn-rose btn-xs cm-sch-chk" data-sch="' + esc(sch.id) + '" data-st="absent"' + (anyApproved ? ' disabled' : '') + '>ไม่เข้าร่วมทั้งโรงเรียน</button>' +
+                '</div>' +
+              '</div>' +
+              '<div class="stack-sm">' + teamItems + '</div>' +
+            '</div>';
+          }).join('') + '</div>';
+    } else {
+      const checkinRows = filteredRegs.map(function (r, idx) {
+        const sch = getSchool(r.schoolId);
+        const isAbs = Boolean(state.absentRegs[r.id]);
+        const isChk = isRegCheckedIn(r.id);
+        const metaApproved = Boolean((state.evalMeta[r.competitionId + '__' + r.level] || {}).approved);
+        return '<tr>' +
+          '<td style="text-align:center;">' + (idx + 1) + '</td>' +
+          '<td><strong>' + esc(sch ? sch.name : '-') + '</strong><div style="font-size:11.5px;color:#4f46e5;">' + esc(r.level) + '</div></td>' +
+          '<td><div>' + esc((r.students || []).map(function (s) { return s.name; }).join(', ')) + '</div>' +
+            '<div style="font-size:11.5px;color:#64748b;">ครู: ' + esc((r.coaches || []).map(function (c) { return typeof c === 'string' ? c : c.name; }).join(', ')) + '</div></td>' +
+          '<td>' + (isAbs ? '<span class="badge badge-rose">ไม่เข้าร่วมแข่งขัน</span>' : (isChk ? '<span class="badge badge-emerald">ลงทะเบียนแล้ว</span>' : '<span class="badge badge-amber">รอลงทะเบียน</span>')) + '</td>' +
+          '<td style="white-space:nowrap;">' +
+            '<button type="button" class="btn ' + (isChk ? 'btn-primary' : 'btn-outline') + ' btn-xs cm-chk" data-id="' + esc(r.id) + '" data-st="checked_in">ลงทะเบียนเข้าร่วม</button> ' +
+            '<button type="button" class="btn ' + (!isChk && !isAbs ? 'btn-amber' : 'btn-outline') + ' btn-xs cm-chk" data-id="' + esc(r.id) + '" data-st="pending">ยกเลิกการลงทะเบียน</button> ' +
+            '<button type="button" class="btn ' + (isAbs ? 'btn-rose-solid' : 'btn-rose') + ' btn-xs cm-chk" data-id="' + esc(r.id) + '" data-st="absent"' + (metaApproved ? ' disabled' : '') + '>ไม่เข้าร่วม</button>' +
+          '</td>' +
+          '<td style="white-space:nowrap;">' +
+            '<button type="button" class="btn btn-outline btn-xs cm-edit" data-id="' + esc(r.id) + '">✏</button> ' +
+            '<button type="button" class="btn btn-rose btn-xs cm-del" data-id="' + esc(r.id) + '"' + (metaApproved ? ' disabled' : '') + '>ถอนทีม</button>' +
+          '</td>' +
+        '</tr>';
+      }).join('');
+      regListHtml =
+        '<div class="table-wrap"><table class="data-table"><thead><tr><th style="text-align:center;">ที่</th><th>โรงเรียน / ระดับ</th><th>ผู้เข้าแข่งขัน</th><th>สถานะการลงทะเบียน</th><th>ลงทะเบียน / ยกเลิกการลงทะเบียน</th><th>จัดการทีม</th></tr></thead><tbody>' +
+          (checkinRows || '<tr><td colspan="6" style="text-align:center;padding:24px;color:#94a3b8;">ไม่พบข้อมูล</td></tr>') +
+        '</tbody></table></div>';
+    }
+
+    main.innerHTML =
+      '<div class="stack">' +
+        '<div class="card row-between">' +
+          '<div><h2 style="margin:0;">✅ ลงทะเบียนเข้าร่วมแข่งขัน (รายงานตัวหน้างาน)</h2><p style="margin:4px 0 0;font-size:13px;color:#64748b;">บันทึกสถานะการรายงานตัวเข้าร่วมแข่งขัน ยกเลิกการลงทะเบียน หรือแจ้งไม่เข้าร่วมแข่งขัน</p></div>' +
+          (pendingCount > 0
+            ? '<button type="button" class="btn btn-rose-solid btn-sm" id="btnBatchPendingAbsent"' + (anyPendingApproved ? ' disabled' : '') + '>🚫 แจ้งไม่เข้าร่วม (ทีมที่ยังไม่ลงทะเบียน ' + pendingCount + ' ทีม)</button>'
+            : '') +
+        '</div>' +
+        '<div class="grid-4">' +
+          '<div class="kpi-card"><div style="font-size:12px;color:#64748b;font-weight:700;">ทั้งหมด</div><div class="kpi-val">' + compRegs.length + ' ทีม</div></div>' +
+          '<div class="kpi-card" style="background:#ecfdf5;border-color:#a7f3d0;"><div style="font-size:12px;color:#047857;font-weight:700;">ลงทะเบียนแล้ว</div><div class="kpi-val" style="color:#065f46;">' + checkedInCount + ' ทีม</div></div>' +
+          '<div class="kpi-card" style="background:#fffbeb;border-color:#fde68a;"><div style="font-size:12px;color:#b45309;font-weight:700;">รอลงทะเบียน</div><div class="kpi-val" style="color:#92400e;">' + pendingCount + ' ทีม</div></div>' +
+          '<div class="kpi-card" style="background:#fff1f2;border-color:#fecdd3;"><div style="font-size:12px;color:#be123c;font-weight:700;">ไม่เข้าร่วม</div><div class="kpi-val" style="color:#9f1239;">' + absentCompCount + ' ทีม</div></div>' +
+        '</div>' +
+        '<div class="card stack">' +
+          '<div class="row-between">' +
+            '<h3 style="margin:0;">' + (rf.editingId ? '✏ แก้ไขทีมเข้าแข่งขัน: ' : '➕ ลงทะเบียนเข้าร่วมแข่งขัน: ') + esc(comp.name) + '</h3>' +
+            (rf.editingId ? '<button type="button" class="btn btn-outline btn-xs" id="btnCancelCmEdit">ยกเลิกแก้ไข</button>' : '') +
+          '</div>' +
+          '<div class="row-wrap">' +
+            '<select class="select" style="width:auto;" id="cmRegComp">' + state.competitions.map(function (c) { return '<option value="' + esc(c.id) + '"' + (comp.id === c.id ? ' selected' : '') + '>' + esc(c.name) + '</option>'; }).join('') + '</select>' +
+            '<select class="select" style="width:auto;" id="cmRegFilterLvl"><option value="ทั้งหมด">ทุกระดับชั้น</option>' + comp.levels.map(function (l) { return '<option value="' + esc(l) + '"' + (state.adminCompManageLevel === l ? ' selected' : '') + '>' + esc(l) + '</option>'; }).join('') + '</select>' +
+          '</div>' +
+          '<form id="cmRegForm" class="stack">' +
+            '<div class="grid-2">' +
+              '<div><label class="field-label">โรงเรียน *</label><select class="select" id="cmSchSel">' + state.schools.map(function (s) { return '<option value="' + esc(s.id) + '"' + (rf.schoolId === s.id ? ' selected' : '') + '>' + esc(s.name) + '</option>'; }).join('') + '</select></div>' +
+              '<div><label class="field-label">ระดับชั้น *</label><select class="select" id="cmLvlSel">' + comp.levels.map(function (l) { return '<option value="' + esc(l) + '"' + (rf.level === l ? ' selected' : '') + '>' + esc(l) + '</option>'; }).join('') + '</select></div>' +
+            '</div>' +
+            '<div class="stack-sm"><div class="row-between"><label class="field-label" style="margin:0;">ผู้เข้าแข่งขัน *</label><button type="button" class="btn btn-amber btn-xs" id="btnCmAddStu">+ เพิ่มนักเรียน</button></div><div class="grid-2">' + stuInputs + '</div></div>' +
+            '<div class="stack-sm"><div class="row-between"><label class="field-label" style="margin:0;">ครูผู้ฝึกสอน</label><button type="button" class="btn btn-primary btn-xs" id="btnCmAddCoach">+ เพิ่มครู</button></div><div class="grid-2">' + coachInputs + '</div></div>' +
+            (comp.requiresSongs
+              ? '<div class="grid-2" style="background:#fffbeb;padding:12px;border-radius:12px;border:1px solid #fde68a;">' +
+                  '<div><label class="field-label">เพลงรอบคัดเลือก *</label><input type="text" class="input" id="cmQSong" value="' + esc(rf.qualifyingSong) + '" required /></div>' +
+                  '<div><label class="field-label">เพลงรอบตัดสิน *</label><input type="text" class="input" id="cmFSong" value="' + esc(rf.finalSong) + '" required /></div>' +
+                '</div>'
+              : '') +
+            '<div><button type="submit" class="btn btn-primary">✓ ' + (rf.editingId ? 'บันทึกการแก้ไขทีม' : 'บันทึกการลงทะเบียนเข้าร่วมแข่งขัน') + '</button></div>' +
+          '</form>' +
+        '</div>' +
+        '<div class="card stack">' +
+          '<div class="row-between">' +
+            '<div><h3 style="margin:0;">📋 รายชื่อและสถานะการรายงานตัว</h3><p style="margin:2px 0 0;font-size:12px;color:#64748b;">เลือกจัดการลงทะเบียนเข้าร่วม ยกเลิก หรือแจ้งไม่เข้าร่วมได้ทั้งแบบรายทีมและแบบรายโรงเรียน</p></div>' +
+            '<div class="row-wrap">' +
+              '<div class="tabs">' +
+                '<button type="button" class="tab-btn ' + (state.compManageRegMode === 'team' ? 'active' : '') + '" id="btnCmModeTeam">แบบรายทีม</button>' +
+                '<button type="button" class="tab-btn ' + (state.compManageRegMode === 'school' ? 'active-amber' : '') + '" id="btnCmModeSchool">แบบรายโรงเรียน</button>' +
+              '</div>' +
+              '<input type="text" class="input" style="width:200px;" id="cmSearchInp" value="' + esc(state.compManageCheckinSearch) + '" placeholder="ค้นหาโรงเรียน / นักเรียน..." />' +
+              '<select class="select" style="width:auto;" id="cmFilterSel"><option value="all">ทั้งหมด</option><option value="checked_in"' + (state.compManageCheckinFilter === 'checked_in' ? ' selected' : '') + '>ลงทะเบียนแล้ว</option><option value="pending"' + (state.compManageCheckinFilter === 'pending' ? ' selected' : '') + '>รอลงทะเบียน</option><option value="absent"' + (state.compManageCheckinFilter === 'absent' ? ' selected' : '') + '>ไม่เข้าร่วม</option></select>' +
+            '</div>' +
+          '</div>' +
+          regListHtml +
+        '</div>' +
+      '</div>';
+
+    if (document.getElementById('btnBatchPendingAbsent')) {
+      document.getElementById('btnBatchPendingAbsent').onclick = function () {
+        openConfirmModal(
+          'ยืนยันแจ้งไม่เข้าร่วม (ทีมที่ยังไม่ลงทะเบียน)',
+          'ต้องการแจ้งไม่เข้าร่วมแข่งขันสำหรับทีมที่ยังไม่ลงทะเบียนทั้งหมด (' + pendingCount + ' ทีม) ในรายการ "' + comp.name + '" ใช่หรือไม่? (จะไม่ถูกนำมาคิดคะแนน)',
+          async function () {
+            try {
+              const res = await apiCall('save_competition_checkin', {
+                competitionId: comp.id,
+                level: state.adminCompManageLevel !== 'ทั้งหมด' ? state.adminCompManageLevel : undefined,
+                pendingOnly: true,
+                status: 'absent',
+              });
+              showToast(res.message); renderAll();
+            } catch (err) { showToast(err.message, 'error'); }
+          },
+          'ยืนยันแจ้งไม่เข้าร่วม'
+        );
+      };
+    }
+    if (document.getElementById('btnCancelCmEdit')) {
+      document.getElementById('btnCancelCmEdit').onclick = function () { resetCompManageRegForm(comp.id, state.adminCompManageLevel); renderAll(); };
+    }
+    document.getElementById('cmRegComp').onchange = function (e) { state.adminCompManageId = e.target.value; state.adminCompManageLevel = 'ทั้งหมด'; resetCompManageRegForm(e.target.value, 'ทั้งหมด'); renderAll(); };
+    document.getElementById('cmRegFilterLvl').onchange = function (e) { state.adminCompManageLevel = e.target.value; if (!rf.editingId && e.target.value !== 'ทั้งหมด') rf.level = e.target.value; renderAll(); };
+    document.getElementById('cmSchSel').onchange = function (e) { rf.schoolId = e.target.value; };
+    document.getElementById('cmLvlSel').onchange = function (e) { rf.level = e.target.value; };
+    document.getElementById('btnCmAddStu').onclick = function () { rf.students.push({ name: '', photoUrl: '' }); renderAll(); };
+    document.getElementById('btnCmAddCoach').onclick = function () { rf.coaches.push({ name: '', photoUrl: '' }); renderAll(); };
+    main.querySelectorAll('.cm-stu-name').forEach(function (inp) { inp.oninput = function () { rf.students[Number(inp.getAttribute('data-idx'))].name = inp.value; }; });
+    main.querySelectorAll('.cm-stu-del').forEach(function (btn) { btn.onclick = function () { rf.students.splice(Number(btn.getAttribute('data-idx')), 1); renderAll(); }; });
+    main.querySelectorAll('.cm-stu-photo').forEach(function (inp) {
+      inp.onchange = async function () {
+        const f0 = inp.files && inp.files[0]; if (!f0) return;
+        try { rf.students[Number(inp.getAttribute('data-idx'))].photoUrl = await uploadImageFile(f0, 'students', 600, 0.85); showToast('อัปโหลดรูปถ่ายนักเรียนแล้ว'); renderAll(); }
+        catch (err) { showToast(err.message, 'error'); }
+      };
+    });
+    main.querySelectorAll('.cm-coach-name').forEach(function (inp) { inp.oninput = function () { rf.coaches[Number(inp.getAttribute('data-idx'))].name = inp.value; }; });
+    main.querySelectorAll('.cm-coach-del').forEach(function (btn) { btn.onclick = function () { rf.coaches.splice(Number(btn.getAttribute('data-idx')), 1); renderAll(); }; });
+    main.querySelectorAll('.cm-coach-photo').forEach(function (inp) {
+      inp.onchange = async function () {
+        const f0 = inp.files && inp.files[0]; if (!f0) return;
+        try { rf.coaches[Number(inp.getAttribute('data-idx'))].photoUrl = await uploadImageFile(f0, 'coaches', 600, 0.85); showToast('อัปโหลดรูปถ่ายครูแล้ว'); renderAll(); }
+        catch (err) { showToast(err.message, 'error'); }
+      };
+    });
+    if (document.getElementById('cmQSong')) {
+      document.getElementById('cmQSong').oninput = function (e) { rf.qualifyingSong = e.target.value; };
+      document.getElementById('cmFSong').oninput = function (e) { rf.finalSong = e.target.value; };
+    }
+    document.getElementById('cmRegForm').onsubmit = async function (e) {
+      e.preventDefault();
+      try {
+        const res = await apiCall('save_registration', {
+          id: rf.editingId,
+          schoolId: rf.schoolId,
+          competitionId: comp.id,
+          level: rf.level,
+          students: rf.students,
+          coaches: rf.coaches,
+          qualifyingSong: rf.qualifyingSong,
+          finalSong: rf.finalSong,
+        });
+        resetCompManageRegForm(comp.id, state.adminCompManageLevel);
+        showToast(res.message);
+        renderAll();
+      } catch (err) { showToast(err.message, 'error'); }
+    };
+    document.getElementById('btnCmModeTeam').onclick = function () { state.compManageRegMode = 'team'; renderAll(); };
+    document.getElementById('btnCmModeSchool').onclick = function () { state.compManageRegMode = 'school'; renderAll(); };
+    document.getElementById('cmSearchInp').oninput = function (e) { state.compManageCheckinSearch = e.target.value; renderAll(); };
+    document.getElementById('cmFilterSel').onchange = function (e) { state.compManageCheckinFilter = e.target.value; renderAll(); };
+    main.querySelectorAll('.cm-chk').forEach(function (btn) {
+      btn.onclick = async function () {
+        try {
+          const res = await apiCall('save_competition_checkin', { registrationId: btn.getAttribute('data-id'), status: btn.getAttribute('data-st') });
+          showToast(res.message); renderAll();
+        } catch (err) { showToast(err.message, 'error'); }
+      };
+    });
+    main.querySelectorAll('.cm-sch-chk').forEach(function (btn) {
+      btn.onclick = async function () {
+        try {
+          const res = await apiCall('save_competition_checkin', {
+            schoolId: btn.getAttribute('data-sch'),
+            competitionId: comp.id,
+            level: state.adminCompManageLevel !== 'ทั้งหมด' ? state.adminCompManageLevel : undefined,
+            status: btn.getAttribute('data-st'),
+          });
+          showToast(res.message); renderAll();
+        } catch (err) { showToast(err.message, 'error'); }
+      };
+    });
+    main.querySelectorAll('.cm-edit').forEach(function (btn) {
+      btn.onclick = function () {
+        const r = state.registrations.find(function (x) { return x.id === btn.getAttribute('data-id'); });
+        if (!r) return;
+        state.compManageRegForm = {
+          editingId: r.id,
+          schoolId: r.schoolId,
+          level: r.level,
+          students: (r.students || []).map(function (s) { return { name: s.name || '', photoUrl: s.photoUrl || '' }; }),
+          coaches: (r.coaches || []).map(function (c) { return typeof c === 'string' ? { name: c, photoUrl: '' } : { name: c.name || '', photoUrl: c.photoUrl || '' }; }),
+          qualifyingSong: r.qualifyingSong || '',
+          finalSong: r.finalSong || '',
+        };
+        renderAll();
+      };
+    });
+    main.querySelectorAll('.cm-del').forEach(function (btn) {
+      btn.onclick = function () {
+        openConfirmModal('ยืนยันถอนทีม / ยกเลิกการลงทะเบียน', 'ต้องการถอนทีมและยกเลิกการลงทะเบียนรายการนี้ใช่หรือไม่?', async function () {
+          try {
+            const res = await apiCall('delete_registration', { id: btn.getAttribute('data-id') });
+            showToast(res.message); renderAll();
+          } catch (err) { showToast(err.message, 'error'); }
+        });
+      };
+    });
+  }
+
+  function renderAdminCompManage(main) {
+    if (state.authSession.role !== 'admin' && state.authSession.role !== 'manager') { main.innerHTML = '<div class="card">สำหรับผู้ดูแลระบบหรือผู้จัดการแข่งขันเท่านั้น</div>'; return; }
+    const comp = getComp(state.adminCompManageId) || state.competitions[0];
+    const crit = getCriteria(comp.id);
+    const activeTab = state.adminCompManageTab === 'criteria' ? 'criteria' : 'sheets';
+    const compRegs = state.registrations.filter(function (r) {
+      return r.competitionId === comp.id && (state.adminCompManageLevel === 'ทั้งหมด' || r.level === state.adminCompManageLevel);
+    });
+    const editingCrit = (state.editingCriterionIdx !== null && crit[state.editingCriterionIdx]) ? crit[state.editingCriterionIdx] : null;
+    if (state.editingCriterionIdx !== null && !editingCrit) state.editingCriterionIdx = null;
 
     const critRows = crit.map(function (c, idx) {
-      return '<tr><td>' + esc(c.label) + '</td><td style="text-align:center;"><strong>' + esc(c.max) + '</strong></td><td><button type="button" class="btn btn-rose btn-xs crit-del" data-idx="' + idx + '">ลบ</button></td></tr>';
+      const isEditingThis = state.editingCriterionIdx === idx;
+      return '<tr style="' + (isEditingThis ? 'background:#ecfdf5;' : '') + '">' +
+        '<td>' + esc(c.label) + '</td>' +
+        '<td style="text-align:center;"><strong>' + esc(c.max) + '</strong></td>' +
+        '<td style="white-space:nowrap;">' +
+          '<button type="button" class="btn btn-outline btn-xs crit-edit" data-idx="' + idx + '">✏ แก้ไข</button> ' +
+          '<button type="button" class="btn btn-rose btn-xs crit-del" data-idx="' + idx + '">ลบ</button>' +
+        '</td>' +
+      '</tr>';
     }).join('');
 
     let tabBodyHtml = '';
-    if (state.adminCompManageTab === 'sheets') {
+    if (activeTab === 'sheets') {
       const sheetRankedLookup = buildRankedEntryLookup();
       const sheetRows = compRegs.map(function (r, idx) {
         const sch = getSchool(r.schoolId);
@@ -2260,181 +2752,11 @@
             '<select class="select" style="width:auto;" id="admSheetLvl"><option value="ทั้งหมด">ทุกระดับชั้น</option>' + comp.levels.map(function (l) { return '<option value="' + esc(l) + '"' + (state.adminCompManageLevel === l ? ' selected' : '') + '>' + esc(l) + '</option>'; }).join('') + '</select>' +
             '<button type="button" class="btn btn-primary" id="btnPrintRegSheet">🖨 พิมพ์ใบลงทะเบียน (เซ็นชื่อ)</button>' +
             '<button type="button" class="btn btn-amber" id="btnPrintScoreSheet">🖨 พิมพ์ใบบันทึกคะแนนกรรมการ</button>' +
+            '<button type="button" class="btn btn-sky" id="btnPrintCombinedJudgeSheet">🖨 ใบลงคะแนนรวม (กรรมการทุกท่าน)</button>' +
           '</div>' +
           '<div class="table-wrap"><table class="data-table"><thead><tr><th style="text-align:center;">ที่</th><th>โรงเรียน / ระดับชั้น</th><th>ผู้เข้าแข่งขัน</th><th>สถานะลงทะเบียน</th><th style="text-align:right;">คะแนนล่าสุด</th></tr></thead><tbody>' +
             (sheetRows || '<tr><td colspan="5" style="text-align:center;padding:24px;color:#94a3b8;">ยังไม่มีรายการแข่งขัน</td></tr>') +
           '</tbody></table></div>' +
-        '</div>';
-    } else if (state.adminCompManageTab === 'registration') {
-      const rf = state.compManageRegForm;
-      const stuInputs = rf.students.map(function (st, idx) {
-        const thumb = safeImg(st.photoUrl);
-        return '<div class="card-compact stack-sm" style="background:#f8fafc;">' +
-          '<div class="row-between" style="gap:8px;">' +
-            '<input type="text" class="input cm-stu-name" data-idx="' + idx + '" value="' + esc(st.name) + '" placeholder="ชื่อ-นามสกุล นักเรียนคนที่ ' + (idx + 1) + '" required />' +
-            (rf.students.length > 1 ? '<button type="button" class="btn btn-rose btn-xs cm-stu-del" data-idx="' + idx + '">ลบ</button>' : '') +
-          '</div>' +
-          '<div class="row-between" style="font-size:12px;">' +
-            '<label style="cursor:pointer;color:#047857;font-weight:700;">📷 ' + (thumb ? 'เปลี่ยนรูป' : 'อัปโหลดรูป') + '<input type="file" accept="image/*" class="hidden cm-stu-photo" data-idx="' + idx + '" /></label>' +
-            (thumb ? '<img src="' + thumb + '" alt="" style="width:32px;height:32px;border-radius:6px;object-fit:cover;" />' : '') +
-          '</div>' +
-        '</div>';
-      }).join('');
-      const coachInputs = rf.coaches.map(function (c, idx) {
-        const cThumb = safeImg(c.photoUrl);
-        return '<div class="card-compact stack-sm" style="background:#f8fafc;">' +
-          '<div class="row-between" style="gap:8px;">' +
-            '<input type="text" class="input cm-coach-name" data-idx="' + idx + '" value="' + esc(c.name) + '" placeholder="ชื่อ-นามสกุล ครูผู้ฝึกสอนท่านที่ ' + (idx + 1) + '" />' +
-            (rf.coaches.length > 1 ? '<button type="button" class="btn btn-rose btn-xs cm-coach-del" data-idx="' + idx + '">ลบ</button>' : '') +
-          '</div>' +
-          '<div class="row-between" style="font-size:12px;">' +
-            '<label style="cursor:pointer;color:#047857;font-weight:700;">📷 ' + (cThumb ? 'เปลี่ยนรูป' : 'อัปโหลดรูป') + '<input type="file" accept="image/*" class="hidden cm-coach-photo" data-idx="' + idx + '" /></label>' +
-            (cThumb ? '<img src="' + cThumb + '" alt="" style="width:32px;height:32px;border-radius:6px;object-fit:cover;" />' : '') +
-          '</div>' +
-        '</div>';
-      }).join('');
-
-      const q = (state.compManageCheckinSearch || '').trim().toLowerCase();
-      const filteredRegs = compRegs.filter(function (r) {
-        const isAbs = Boolean(state.absentRegs[r.id]);
-        const isChk = isRegCheckedIn(r.id);
-        const stKey = isAbs ? 'absent' : (isChk ? 'checked_in' : 'pending');
-        if (state.compManageCheckinFilter !== 'all' && stKey !== state.compManageCheckinFilter) return false;
-        if (!q) return true;
-        const sch = getSchool(r.schoolId);
-        const txt = ((sch ? sch.name : '') + ' ' + r.level + ' ' + (r.students || []).map(function (s) { return s.name; }).join(' ')).toLowerCase();
-        return txt.indexOf(q) !== -1;
-      });
-
-      let regListHtml = '';
-      if (state.compManageRegMode === 'school') {
-        const schoolBuckets = {};
-        filteredRegs.forEach(function (r) {
-          if (!schoolBuckets[r.schoolId]) schoolBuckets[r.schoolId] = [];
-          schoolBuckets[r.schoolId].push(r);
-        });
-        const schoolGroups = Object.keys(schoolBuckets).map(function (sId) {
-          return { school: getSchool(sId) || { id: sId, name: 'ไม่ระบุโรงเรียน', schoolCode: '-' }, regs: schoolBuckets[sId] };
-        });
-        regListHtml = schoolGroups.length === 0
-          ? '<div style="text-align:center;padding:24px;color:#94a3b8;">ไม่พบข้อมูลโรงเรียนที่มีทีมสมัครในเงื่อนไขที่เลือก</div>'
-          : '<div class="stack">' + schoolGroups.map(function (grp) {
-              const sch = grp.school;
-              const regs = grp.regs;
-              const schChk = regs.filter(function (r) { return isRegCheckedIn(r.id); }).length;
-              const schAbs = regs.filter(function (r) { return Boolean(state.absentRegs[r.id]); }).length;
-              const schPend = Math.max(0, regs.length - schChk - schAbs);
-              const anyApproved = regs.some(function (r) { return Boolean((state.evalMeta[r.competitionId + '__' + r.level] || {}).approved); });
-              const teamItems = regs.map(function (r) {
-                const isAbs = Boolean(state.absentRegs[r.id]);
-                const isChk = isRegCheckedIn(r.id);
-                const metaApproved = Boolean((state.evalMeta[r.competitionId + '__' + r.level] || {}).approved);
-                return '<div class="row-between" style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;">' +
-                  '<div>' +
-                    '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">' +
-                      '<span class="badge badge-slate">' + esc(r.level) + '</span>' +
-                      (isAbs ? '<span class="badge badge-rose">ไม่เข้าร่วมแข่งขัน</span>' : (isChk ? '<span class="badge badge-emerald">ลงทะเบียนแล้ว</span>' : '<span class="badge badge-amber">รอลงทะเบียน</span>')) +
-                    '</div>' +
-                    '<div style="font-size:13px;font-weight:600;margin-top:4px;">' + esc((r.students || []).map(function (s) { return s.name; }).join(', ') || '-') + '</div>' +
-                  '</div>' +
-                  '<div class="row-wrap">' +
-                    (!isChk
-                      ? '<button type="button" class="btn btn-primary btn-xs cm-chk" data-id="' + esc(r.id) + '" data-st="checked_in">ลงทะเบียนเข้าร่วม</button>'
-                      : '<button type="button" class="btn btn-amber btn-xs cm-chk" data-id="' + esc(r.id) + '" data-st="pending">ยกเลิกการลงทะเบียน</button>') +
-                    (isAbs ? '<button type="button" class="btn btn-amber btn-xs cm-chk" data-id="' + esc(r.id) + '" data-st="pending">ยกเลิกไม่เข้าร่วม</button>' : '') +
-                    '<button type="button" class="btn btn-outline btn-xs cm-edit" data-id="' + esc(r.id) + '">✏</button>' +
-                    '<button type="button" class="btn btn-rose btn-xs cm-del" data-id="' + esc(r.id) + '"' + (metaApproved ? ' disabled' : '') + '>ถอนทีม</button>' +
-                  '</div>' +
-                '</div>';
-              }).join('');
-              return '<div class="card-compact stack-sm" style="background:#f8fafc;">' +
-                '<div class="row-between">' +
-                  '<div><strong>' + esc(sch.name) + '</strong> <span class="badge badge-slate">รหัส ' + esc(sch.schoolCode) + '</span> <span class="badge badge-amber">ทั้งหมด ' + regs.length + ' ทีม (เข้าร่วมแล้ว ' + schChk + ' • รอ ' + schPend + (schAbs > 0 ? ' • ไม่ร่วม ' + schAbs : '') + ')</span></div>' +
-                  '<div class="row-wrap">' +
-                    '<button type="button" class="btn btn-primary btn-xs cm-sch-chk" data-sch="' + esc(sch.id) + '" data-st="checked_in">ลงทะเบียนทั้งโรงเรียน</button>' +
-                    '<button type="button" class="btn btn-amber btn-xs cm-sch-chk" data-sch="' + esc(sch.id) + '" data-st="pending">ยกเลิกการลงทะเบียนทั้งโรงเรียน</button>' +
-                    '<button type="button" class="btn btn-rose btn-xs cm-sch-chk" data-sch="' + esc(sch.id) + '" data-st="absent"' + (anyApproved ? ' disabled' : '') + '>ไม่เข้าร่วมทั้งโรงเรียน</button>' +
-                  '</div>' +
-                '</div>' +
-                '<div class="stack-sm">' + teamItems + '</div>' +
-              '</div>';
-            }).join('') + '</div>';
-      } else {
-        const checkinRows = filteredRegs.map(function (r, idx) {
-          const sch = getSchool(r.schoolId);
-          const isAbs = Boolean(state.absentRegs[r.id]);
-          const isChk = isRegCheckedIn(r.id);
-          const metaApproved = Boolean((state.evalMeta[r.competitionId + '__' + r.level] || {}).approved);
-          return '<tr>' +
-            '<td style="text-align:center;">' + (idx + 1) + '</td>' +
-            '<td><strong>' + esc(sch ? sch.name : '-') + '</strong><div style="font-size:11.5px;color:#4f46e5;">' + esc(r.level) + '</div></td>' +
-            '<td><div>' + esc((r.students || []).map(function (s) { return s.name; }).join(', ')) + '</div>' +
-              '<div style="font-size:11.5px;color:#64748b;">ครู: ' + esc((r.coaches || []).map(function (c) { return typeof c === 'string' ? c : c.name; }).join(', ')) + '</div></td>' +
-            '<td>' + (isAbs ? '<span class="badge badge-rose">ไม่เข้าร่วมแข่งขัน</span>' : (isChk ? '<span class="badge badge-emerald">ลงทะเบียนแล้ว</span>' : '<span class="badge badge-amber">รอลงทะเบียน</span>')) + '</td>' +
-            '<td style="white-space:nowrap;">' +
-              '<button type="button" class="btn ' + (isChk ? 'btn-primary' : 'btn-outline') + ' btn-xs cm-chk" data-id="' + esc(r.id) + '" data-st="checked_in">ลงทะเบียนเข้าร่วม</button> ' +
-              '<button type="button" class="btn ' + (!isChk && !isAbs ? 'btn-amber' : 'btn-outline') + ' btn-xs cm-chk" data-id="' + esc(r.id) + '" data-st="pending">ยกเลิกการลงทะเบียน</button> ' +
-              '<button type="button" class="btn ' + (isAbs ? 'btn-rose-solid' : 'btn-rose') + ' btn-xs cm-chk" data-id="' + esc(r.id) + '" data-st="absent"' + (metaApproved ? ' disabled' : '') + '>ไม่เข้าร่วม</button>' +
-            '</td>' +
-            '<td style="white-space:nowrap;">' +
-              '<button type="button" class="btn btn-outline btn-xs cm-edit" data-id="' + esc(r.id) + '">✏</button> ' +
-              '<button type="button" class="btn btn-rose btn-xs cm-del" data-id="' + esc(r.id) + '"' + (metaApproved ? ' disabled' : '') + '>ถอนทีม</button>' +
-            '</td>' +
-          '</tr>';
-        }).join('');
-        regListHtml =
-          '<div class="table-wrap"><table class="data-table"><thead><tr><th style="text-align:center;">ที่</th><th>โรงเรียน / ระดับ</th><th>ผู้เข้าแข่งขัน</th><th>สถานะการลงทะเบียน</th><th>ลงทะเบียน / ยกเลิกการลงทะเบียน</th><th>จัดการทีม</th></tr></thead><tbody>' +
-            (checkinRows || '<tr><td colspan="6" style="text-align:center;padding:24px;color:#94a3b8;">ไม่พบข้อมูล</td></tr>') +
-          '</tbody></table></div>';
-      }
-
-      tabBodyHtml =
-        '<div class="stack">' +
-          '<div class="grid-4">' +
-            '<div class="kpi-card"><div style="font-size:12px;color:#64748b;font-weight:700;">ทั้งหมด</div><div class="kpi-val">' + compRegs.length + ' ทีม</div></div>' +
-            '<div class="kpi-card" style="background:#ecfdf5;border-color:#a7f3d0;"><div style="font-size:12px;color:#047857;font-weight:700;">ลงทะเบียนแล้ว</div><div class="kpi-val" style="color:#065f46;">' + checkedInCount + ' ทีม</div></div>' +
-            '<div class="kpi-card" style="background:#fffbeb;border-color:#fde68a;"><div style="font-size:12px;color:#b45309;font-weight:700;">รอลงทะเบียน</div><div class="kpi-val" style="color:#92400e;">' + pendingCount + ' ทีม</div></div>' +
-            '<div class="kpi-card" style="background:#fff1f2;border-color:#fecdd3;"><div style="font-size:12px;color:#be123c;font-weight:700;">ไม่เข้าร่วม</div><div class="kpi-val" style="color:#9f1239;">' + absentCompCount + ' ทีม</div></div>' +
-          '</div>' +
-          '<div class="card stack">' +
-            '<div class="row-between">' +
-              '<h3 style="margin:0;">' + (rf.editingId ? '✏ แก้ไขทีมเข้าแข่งขัน: ' : '➕ ลงทะเบียนเข้าร่วมแข่งขัน: ') + esc(comp.name) + '</h3>' +
-              (rf.editingId ? '<button type="button" class="btn btn-outline btn-xs" id="btnCancelCmEdit">ยกเลิกแก้ไข</button>' : '') +
-            '</div>' +
-            '<div class="row-wrap">' +
-              '<select class="select" style="width:auto;" id="cmRegComp">' + state.competitions.map(function (c) { return '<option value="' + esc(c.id) + '"' + (comp.id === c.id ? ' selected' : '') + '>' + esc(c.name) + '</option>'; }).join('') + '</select>' +
-              '<select class="select" style="width:auto;" id="cmRegFilterLvl"><option value="ทั้งหมด">ทุกระดับชั้น</option>' + comp.levels.map(function (l) { return '<option value="' + esc(l) + '"' + (state.adminCompManageLevel === l ? ' selected' : '') + '>' + esc(l) + '</option>'; }).join('') + '</select>' +
-            '</div>' +
-            '<form id="cmRegForm" class="stack">' +
-              '<div class="grid-2">' +
-                '<div><label class="field-label">โรงเรียน *</label><select class="select" id="cmSchSel">' + state.schools.map(function (s) { return '<option value="' + esc(s.id) + '"' + (rf.schoolId === s.id ? ' selected' : '') + '>' + esc(s.name) + '</option>'; }).join('') + '</select></div>' +
-                '<div><label class="field-label">ระดับชั้น *</label><select class="select" id="cmLvlSel">' + comp.levels.map(function (l) { return '<option value="' + esc(l) + '"' + (rf.level === l ? ' selected' : '') + '>' + esc(l) + '</option>'; }).join('') + '</select></div>' +
-              '</div>' +
-              '<div class="stack-sm"><div class="row-between"><label class="field-label" style="margin:0;">ผู้เข้าแข่งขัน *</label><button type="button" class="btn btn-amber btn-xs" id="btnCmAddStu">+ เพิ่มนักเรียน</button></div><div class="grid-2">' + stuInputs + '</div></div>' +
-              '<div class="stack-sm"><div class="row-between"><label class="field-label" style="margin:0;">ครูผู้ฝึกสอน</label><button type="button" class="btn btn-primary btn-xs" id="btnCmAddCoach">+ เพิ่มครู</button></div><div class="grid-2">' + coachInputs + '</div></div>' +
-              (comp.requiresSongs
-                ? '<div class="grid-2" style="background:#fffbeb;padding:12px;border-radius:12px;border:1px solid #fde68a;">' +
-                    '<div><label class="field-label">เพลงรอบคัดเลือก *</label><input type="text" class="input" id="cmQSong" value="' + esc(rf.qualifyingSong) + '" required /></div>' +
-                    '<div><label class="field-label">เพลงรอบตัดสิน *</label><input type="text" class="input" id="cmFSong" value="' + esc(rf.finalSong) + '" required /></div>' +
-                  '</div>'
-                : '') +
-              '<div><button type="submit" class="btn btn-primary">✓ ' + (rf.editingId ? 'บันทึกการแก้ไขทีม' : 'บันทึกการลงทะเบียนเข้าร่วมแข่งขัน') + '</button></div>' +
-            '</form>' +
-          '</div>' +
-          '<div class="card stack">' +
-            '<div class="row-between">' +
-              '<div><h3 style="margin:0;">📋 ลงทะเบียน / ยกเลิกการลงทะเบียนผู้เข้าร่วมแข่งขัน</h3><p style="margin:2px 0 0;font-size:12px;color:#64748b;">เลือกจัดการลงทะเบียนเข้าร่วมหรือยกเลิกการลงทะเบียนได้ทั้งแบบรายทีมและแบบรายโรงเรียน</p></div>' +
-              '<div class="row-wrap">' +
-                '<div class="tabs">' +
-                  '<button type="button" class="tab-btn ' + (state.compManageRegMode === 'team' ? 'active' : '') + '" id="btnCmModeTeam">แบบรายทีม</button>' +
-                  '<button type="button" class="tab-btn ' + (state.compManageRegMode === 'school' ? 'active-amber' : '') + '" id="btnCmModeSchool">แบบรายโรงเรียน</button>' +
-                '</div>' +
-                '<input type="text" class="input" style="width:200px;" id="cmSearchInp" value="' + esc(state.compManageCheckinSearch) + '" placeholder="ค้นหาโรงเรียน / นักเรียน..." />' +
-                '<select class="select" style="width:auto;" id="cmFilterSel"><option value="all">ทั้งหมด</option><option value="checked_in"' + (state.compManageCheckinFilter === 'checked_in' ? ' selected' : '') + '>ลงทะเบียนแล้ว</option><option value="pending"' + (state.compManageCheckinFilter === 'pending' ? ' selected' : '') + '>รอลงทะเบียน</option><option value="absent"' + (state.compManageCheckinFilter === 'absent' ? ' selected' : '') + '>ไม่เข้าร่วม</option></select>' +
-              '</div>' +
-            '</div>' +
-            regListHtml +
-          '</div>' +
         '</div>';
     } else {
       tabBodyHtml =
@@ -2443,156 +2765,266 @@
             '<select class="select" style="width:auto;" id="admCritComp">' + state.competitions.map(function (c) { return '<option value="' + esc(c.id) + '"' + (comp.id === c.id ? ' selected' : '') + '>' + esc(c.name) + '</option>'; }).join('') + '</select>' +
             '<button type="button" class="btn btn-outline btn-sm" id="btnResetCrit">↺ คืนค่ามาตรฐาน</button>' +
           '</div>' +
-          '<form id="addCritForm" class="row-wrap"><input type="text" class="input" style="flex:1;" id="newCritLabel" placeholder="หัวข้อเกณฑ์การให้คะแนน..." required /><input type="number" class="input" style="width:120px;" id="newCritMax" value="10" min="1" max="100" required /><button type="submit" class="btn btn-primary">+ เพิ่มเกณฑ์</button></form>' +
-          '<div class="table-wrap"><table class="data-table"><thead><tr><th>หัวข้อเกณฑ์</th><th style="text-align:center;">คะแนนเต็ม</th><th>ลบ</th></tr></thead><tbody>' + (critRows || '<tr><td colspan="3" style="text-align:center;padding:18px;">ไม่มีเกณฑ์ย่อย</td></tr>') + '</tbody></table></div>' +
+          '<form id="addCritForm" class="row-wrap">' +
+            '<input type="text" class="input" style="flex:1;" id="newCritLabel" value="' + esc(editingCrit ? editingCrit.label : '') + '" placeholder="' + (editingCrit ? ('แก้ไขชื่อเกณฑ์ข้อที่ ' + (state.editingCriterionIdx + 1) + '...') : 'หัวข้อเกณฑ์การให้คะแนน...') + '" required />' +
+            '<input type="number" class="input" style="width:120px;" id="newCritMax" value="' + esc(editingCrit ? editingCrit.max : 10) + '" min="1" max="100" required />' +
+            '<button type="submit" class="btn btn-primary">' + (editingCrit ? '✓ บันทึกการแก้ไข' : '+ เพิ่มเกณฑ์') + '</button>' +
+            (editingCrit ? '<button type="button" class="btn btn-outline" id="btnCancelCritEdit">ยกเลิก</button>' : '') +
+          '</form>' +
+          '<div class="table-wrap"><table class="data-table"><thead><tr><th>หัวข้อเกณฑ์</th><th style="text-align:center;">คะแนนเต็ม</th><th>จัดการ</th></tr></thead><tbody>' + (critRows || '<tr><td colspan="3" style="text-align:center;padding:18px;">ไม่มีเกณฑ์ย่อย</td></tr>') + '</tbody></table></div>' +
         '</div>';
     }
 
     main.innerHTML =
       '<div class="stack">' +
         '<div class="card row-between">' +
-          '<div><h2 style="margin:0;">📄 การจัดการแข่งขัน (เอกสาร ลงทะเบียน & เกณฑ์คะแนน)</h2></div>' +
+          '<div><h2 style="margin:0;">📄 การจัดการแข่งขัน (เอกสาร & เกณฑ์การตัดสิน)</h2></div>' +
           '<div class="tabs">' +
-            '<button type="button" class="tab-btn ' + (state.adminCompManageTab === 'sheets' ? 'active' : '') + '" id="tabAdmSheets">เอกสารลงทะเบียน / ใบคะแนน</button>' +
-            '<button type="button" class="tab-btn ' + (state.adminCompManageTab === 'registration' ? 'active' : '') + '" id="tabAdmReg">ลงทะเบียนเข้าร่วมแข่งขัน</button>' +
-            '<button type="button" class="tab-btn ' + (state.adminCompManageTab === 'criteria' ? 'active-amber' : '') + '" id="tabAdmCrit">ตั้งค่าเกณฑ์คะแนน</button>' +
+            '<button type="button" class="tab-btn ' + (activeTab === 'sheets' ? 'active' : '') + '" id="tabAdmSheets">เอกสารลงทะเบียน / ใบคะแนน</button>' +
+            '<button type="button" class="tab-btn ' + (activeTab === 'criteria' ? 'active-amber' : '') + '" id="tabAdmCrit">กำหนดเกณฑ์การตัดสิน</button>' +
           '</div>' +
         '</div>' +
         tabBodyHtml +
       '</div>';
 
-    document.getElementById('tabAdmSheets').onclick = function () { state.adminCompManageTab = 'sheets'; renderAll(); };
-    document.getElementById('tabAdmReg').onclick = function () { state.adminCompManageTab = 'registration'; renderAll(); };
+    document.getElementById('tabAdmSheets').onclick = function () { state.adminCompManageTab = 'sheets'; state.editingCriterionIdx = null; renderAll(); };
     document.getElementById('tabAdmCrit').onclick = function () { state.adminCompManageTab = 'criteria'; renderAll(); };
     if (document.getElementById('admSheetComp')) {
-      document.getElementById('admSheetComp').onchange = function (e) { state.adminCompManageId = e.target.value; state.adminCompManageLevel = 'ทั้งหมด'; resetCompManageRegForm(e.target.value, 'ทั้งหมด'); renderAll(); };
+      document.getElementById('admSheetComp').onchange = function (e) { state.adminCompManageId = e.target.value; state.adminCompManageLevel = 'ทั้งหมด'; state.editingCriterionIdx = null; renderAll(); };
       document.getElementById('admSheetLvl').onchange = function (e) { state.adminCompManageLevel = e.target.value; renderAll(); };
       document.getElementById('btnPrintRegSheet').onclick = function () { printAdminSheet('register', state.adminCompManageId, state.adminCompManageLevel); };
       document.getElementById('btnPrintScoreSheet').onclick = function () { printAdminSheet('score', state.adminCompManageId, state.adminCompManageLevel); };
-    }
-    if (document.getElementById('cmRegForm')) {
-      const rf = state.compManageRegForm;
-      if (document.getElementById('btnCancelCmEdit')) {
-        document.getElementById('btnCancelCmEdit').onclick = function () { resetCompManageRegForm(comp.id, state.adminCompManageLevel); renderAll(); };
-      }
-      document.getElementById('cmRegComp').onchange = function (e) { state.adminCompManageId = e.target.value; state.adminCompManageLevel = 'ทั้งหมด'; resetCompManageRegForm(e.target.value, 'ทั้งหมด'); renderAll(); };
-      document.getElementById('cmRegFilterLvl').onchange = function (e) { state.adminCompManageLevel = e.target.value; if (!rf.editingId && e.target.value !== 'ทั้งหมด') rf.level = e.target.value; renderAll(); };
-      document.getElementById('cmSchSel').onchange = function (e) { rf.schoolId = e.target.value; };
-      document.getElementById('cmLvlSel').onchange = function (e) { rf.level = e.target.value; };
-      document.getElementById('btnCmAddStu').onclick = function () { rf.students.push({ name: '', photoUrl: '' }); renderAll(); };
-      document.getElementById('btnCmAddCoach').onclick = function () { rf.coaches.push({ name: '', photoUrl: '' }); renderAll(); };
-      main.querySelectorAll('.cm-stu-name').forEach(function (inp) { inp.oninput = function () { rf.students[Number(inp.getAttribute('data-idx'))].name = inp.value; }; });
-      main.querySelectorAll('.cm-stu-del').forEach(function (btn) { btn.onclick = function () { rf.students.splice(Number(btn.getAttribute('data-idx')), 1); renderAll(); }; });
-      main.querySelectorAll('.cm-stu-photo').forEach(function (inp) {
-        inp.onchange = async function () {
-          const f0 = inp.files && inp.files[0]; if (!f0) return;
-          try { rf.students[Number(inp.getAttribute('data-idx'))].photoUrl = await uploadImageFile(f0, 'students', 600, 0.85); showToast('อัปโหลดรูปถ่ายนักเรียนแล้ว'); renderAll(); }
-          catch (err) { showToast(err.message, 'error'); }
-        };
-      });
-      main.querySelectorAll('.cm-coach-name').forEach(function (inp) { inp.oninput = function () { rf.coaches[Number(inp.getAttribute('data-idx'))].name = inp.value; }; });
-      main.querySelectorAll('.cm-coach-del').forEach(function (btn) { btn.onclick = function () { rf.coaches.splice(Number(btn.getAttribute('data-idx')), 1); renderAll(); }; });
-      main.querySelectorAll('.cm-coach-photo').forEach(function (inp) {
-        inp.onchange = async function () {
-          const f0 = inp.files && inp.files[0]; if (!f0) return;
-          try { rf.coaches[Number(inp.getAttribute('data-idx'))].photoUrl = await uploadImageFile(f0, 'coaches', 600, 0.85); showToast('อัปโหลดรูปถ่ายครูแล้ว'); renderAll(); }
-          catch (err) { showToast(err.message, 'error'); }
-        };
-      });
-      if (document.getElementById('cmQSong')) {
-        document.getElementById('cmQSong').oninput = function (e) { rf.qualifyingSong = e.target.value; };
-        document.getElementById('cmFSong').oninput = function (e) { rf.finalSong = e.target.value; };
-      }
-      document.getElementById('cmRegForm').onsubmit = async function (e) {
-        e.preventDefault();
-        try {
-          const res = await apiCall('save_registration', {
-            id: rf.editingId,
-            schoolId: rf.schoolId,
-            competitionId: comp.id,
-            level: rf.level,
-            students: rf.students,
-            coaches: rf.coaches,
-            qualifyingSong: rf.qualifyingSong,
-            finalSong: rf.finalSong,
-          });
-          resetCompManageRegForm(comp.id, state.adminCompManageLevel);
-          showToast(res.message);
-          renderAll();
-        } catch (err) { showToast(err.message, 'error'); }
-      };
-      document.getElementById('btnCmModeTeam').onclick = function () { state.compManageRegMode = 'team'; renderAll(); };
-      document.getElementById('btnCmModeSchool').onclick = function () { state.compManageRegMode = 'school'; renderAll(); };
-      document.getElementById('cmSearchInp').oninput = function (e) { state.compManageCheckinSearch = e.target.value; renderAll(); };
-      document.getElementById('cmFilterSel').onchange = function (e) { state.compManageCheckinFilter = e.target.value; renderAll(); };
-      main.querySelectorAll('.cm-chk').forEach(function (btn) {
-        btn.onclick = async function () {
-          try {
-            const res = await apiCall('save_competition_checkin', { registrationId: btn.getAttribute('data-id'), status: btn.getAttribute('data-st') });
-            showToast(res.message); renderAll();
-          } catch (err) { showToast(err.message, 'error'); }
-        };
-      });
-      main.querySelectorAll('.cm-sch-chk').forEach(function (btn) {
-        btn.onclick = async function () {
-          try {
-            const res = await apiCall('save_competition_checkin', {
-              schoolId: btn.getAttribute('data-sch'),
-              competitionId: comp.id,
-              level: state.adminCompManageLevel !== 'ทั้งหมด' ? state.adminCompManageLevel : undefined,
-              status: btn.getAttribute('data-st'),
-            });
-            showToast(res.message); renderAll();
-          } catch (err) { showToast(err.message, 'error'); }
-        };
-      });
-      main.querySelectorAll('.cm-edit').forEach(function (btn) {
-        btn.onclick = function () {
-          const r = state.registrations.find(function (x) { return x.id === btn.getAttribute('data-id'); });
-          if (!r) return;
-          state.compManageRegForm = {
-            editingId: r.id,
-            schoolId: r.schoolId,
-            level: r.level,
-            students: (r.students || []).map(function (s) { return { name: s.name || '', photoUrl: s.photoUrl || '' }; }),
-            coaches: (r.coaches || []).map(function (c) { return typeof c === 'string' ? { name: c, photoUrl: '' } : { name: c.name || '', photoUrl: c.photoUrl || '' }; }),
-            qualifyingSong: r.qualifyingSong || '',
-            finalSong: r.finalSong || '',
-          };
-          renderAll();
-        };
-      });
-      main.querySelectorAll('.cm-del').forEach(function (btn) {
-        btn.onclick = function () {
-          openConfirmModal('ยืนยันถอนทีม / ยกเลิกการลงทะเบียน', 'ต้องการถอนทีมและยกเลิกการลงทะเบียนรายการนี้ใช่หรือไม่?', async function () {
-            try {
-              const res = await apiCall('delete_registration', { id: btn.getAttribute('data-id') });
-              showToast(res.message); renderAll();
-            } catch (err) { showToast(err.message, 'error'); }
-          });
-        };
-      });
+      document.getElementById('btnPrintCombinedJudgeSheet').onclick = function () { printAdminSheet('combined-judge', state.adminCompManageId, state.adminCompManageLevel); };
     }
     if (document.getElementById('admCritComp')) {
-      document.getElementById('admCritComp').onchange = function (e) { state.adminCompManageId = e.target.value; renderAll(); };
+      document.getElementById('admCritComp').onchange = function (e) { state.adminCompManageId = e.target.value; state.editingCriterionIdx = null; renderAll(); };
       document.getElementById('btnResetCrit').onclick = async function () {
-        try { const res = await apiCall('reset_criteria', { competitionId: comp.id }); showToast(res.message); renderAll(); }
+        try { const res = await apiCall('reset_criteria', { competitionId: comp.id }); state.editingCriterionIdx = null; showToast(res.message); renderAll(); }
         catch (err) { showToast(err.message, 'error'); }
       };
+      if (document.getElementById('btnCancelCritEdit')) {
+        document.getElementById('btnCancelCritEdit').onclick = function () { state.editingCriterionIdx = null; renderAll(); };
+      }
       document.getElementById('addCritForm').onsubmit = async function (e) {
         e.preventDefault();
-        const next = crit.concat([{ key: 'c_' + Date.now(), label: document.getElementById('newCritLabel').value, max: Number(document.getElementById('newCritMax').value) }]);
-        try { const res = await apiCall('save_criteria', { competitionId: comp.id, criteria: next }); showToast(res.message); renderAll(); }
-        catch (err) { showToast(err.message, 'error'); }
+        const label = document.getElementById('newCritLabel').value.trim();
+        const max = Number(document.getElementById('newCritMax').value);
+        if (!label || !max || max <= 0) return;
+        let next = crit.slice();
+        if (state.editingCriterionIdx !== null && next[state.editingCriterionIdx]) {
+          next[state.editingCriterionIdx] = { key: next[state.editingCriterionIdx].key, label: label, max: max };
+        } else {
+          next.push({ key: 'c_' + Date.now(), label: label, max: max });
+        }
+        try {
+          const res = await apiCall('save_criteria', { competitionId: comp.id, criteria: next });
+          state.editingCriterionIdx = null;
+          showToast(res.message); renderAll();
+        } catch (err) { showToast(err.message, 'error'); }
       };
+      main.querySelectorAll('.crit-edit').forEach(function (btn) {
+        btn.onclick = function () { state.editingCriterionIdx = Number(btn.getAttribute('data-idx')); renderAll(); };
+      });
       main.querySelectorAll('.crit-del').forEach(function (btn) {
         btn.onclick = async function () {
-          const next = crit.filter(function (_x, i) { return i !== Number(btn.getAttribute('data-idx')); });
-          try { const res = await apiCall('save_criteria', { competitionId: comp.id, criteria: next }); showToast(res.message); renderAll(); }
-          catch (err) { showToast(err.message, 'error'); }
+          const idx = Number(btn.getAttribute('data-idx'));
+          const next = crit.filter(function (_x, i) { return i !== idx; });
+          try {
+            const res = await apiCall('save_criteria', { competitionId: comp.id, criteria: next });
+            if (state.editingCriterionIdx === idx) state.editingCriterionIdx = null;
+            showToast(res.message); renderAll();
+          } catch (err) { showToast(err.message, 'error'); }
         };
       });
     }
+  }
+
+  function renderScoreEntry(main) {
+    if (state.authSession.role !== 'admin' && state.authSession.role !== 'manager') {
+      main.innerHTML = '<div class="card">สำหรับผู้ดูแลระบบหรือผู้จัดการแข่งขันเท่านั้น</div>';
+      return;
+    }
+    const comp = getComp(state.scoreEntryCompId) || state.competitions[0];
+    const resolvedLevel = (comp.levels || []).indexOf(state.scoreEntryLevel) !== -1 ? state.scoreEntryLevel : (comp.levels[0] || '');
+    state.scoreEntryCompId = comp.id;
+    state.scoreEntryLevel = resolvedLevel;
+    const isTwoRound = isTwoRoundComp(comp.id);
+    const activeRound = state.scoreEntryRound === 'final' ? 'final' : 'qualifying';
+    const metaKey = comp.id + '__' + resolvedLevel;
+    const currentMeta = state.evalMeta[metaKey] || { status: 'pending', approved: false };
+    const isApproved = Boolean(currentMeta.approved);
+
+    const assignedJudges = state.judges.filter(function (j) {
+      return j.competitionId === comp.id && String(j.level || '').trim() === resolvedLevel.trim();
+    });
+    const levelRegs = state.registrations.filter(function (r) {
+      return r.competitionId === comp.id && String(r.level || '').trim() === resolvedLevel.trim();
+    });
+    const activeRegs = levelRegs.filter(function (r) { return !state.absentRegs[r.id]; });
+    const absentCount = levelRegs.length - activeRegs.length;
+
+    const rankedList = isTwoRound ? buildCompetitionRankedList(comp.id, resolvedLevel) : [];
+    const qualRankMap = {};
+    rankedList.forEach(function (e) { if (e.qualifyingRank !== null) qualRankMap[e.reg.id] = e.qualifyingRank; });
+
+    function getStoredScore(regId, judgeId) {
+      if (isTwoRound) {
+        const rs = state.roundScores[regId] || {};
+        const hasRoundStore = Boolean(state.roundScores[regId]);
+        return activeRound === 'final'
+          ? (rs.final ? rs.final[judgeId] : undefined)
+          : ((rs.qualifying && rs.qualifying[judgeId] !== undefined) ? rs.qualifying[judgeId] : (!hasRoundStore && state.scores[regId] ? state.scores[regId][judgeId] : undefined));
+      }
+      return state.scores[regId] ? state.scores[regId][judgeId] : undefined;
+    }
+    function getCellVal(regId, judgeId) {
+      if (state.scoreEntryDrafts[regId] && Object.prototype.hasOwnProperty.call(state.scoreEntryDrafts[regId], judgeId)) {
+        return String(state.scoreEntryDrafts[regId][judgeId]);
+      }
+      const s = getStoredScore(regId, judgeId);
+      return s !== undefined && s !== null ? String(s) : '';
+    }
+    function calcRowAvg(regId) {
+      let sum = 0; let cnt = 0;
+      assignedJudges.forEach(function (j) {
+        if (state.recusedJudges[regId] && state.recusedJudges[regId][j.id]) return;
+        const vStr = getCellVal(regId, j.id).trim();
+        if (vStr !== '') {
+          const n = Number(vStr);
+          if (Number.isFinite(n)) { sum += n; cnt += 1; }
+        }
+      });
+      return cnt > 0 ? (sum / cnt).toFixed(2) : '-';
+    }
+
+    const judgeHeaders = assignedJudges.map(function (j, jIdx) {
+      return '<th style="text-align:center;min-width:120px;">กรรมการ ' + (jIdx + 1) + '<div style="font-size:11px;font-weight:500;color:#64748b;">' + esc(j.name) + '</div></th>';
+    }).join('');
+
+    const rowsHtml = activeRegs.map(function (r, idx) {
+      const sch = getSchool(r.schoolId);
+      const isChk = isRegCheckedIn(r.id);
+      const qRank = qualRankMap[r.id];
+      const judgeInputs = assignedJudges.map(function (j) {
+        const isRecused = Boolean(state.recusedJudges[r.id] && state.recusedJudges[r.id][j.id]);
+        if (isRecused) {
+          return '<td style="text-align:center;"><span class="badge badge-amber">งดเว้น (โรงเรียนตน)</span></td>';
+        }
+        return '<td style="text-align:center;"><input type="number" min="0" max="100" step="0.01" class="input se-inp" style="width:96px;text-align:center;font-weight:700;" data-reg="' + esc(r.id) + '" data-jdg="' + esc(j.id) + '" value="' + esc(getCellVal(r.id, j.id)) + '" placeholder="0-100"' + (isApproved ? ' disabled' : '') + ' /></td>';
+      }).join('');
+      return '<tr>' +
+        '<td style="text-align:center;font-weight:700;">' + (idx + 1) + '</td>' +
+        '<td><strong>' + esc(sch ? sch.name : '-') + '</strong> ' +
+          (isChk ? '<span class="badge badge-emerald">รายงานตัวแล้ว</span>' : '<span class="badge badge-slate">ยังไม่รายงานตัว</span>') +
+          (isTwoRound && qRank ? ' <span class="badge badge-amber">คัดเลือก #' + qRank + '</span>' : '') +
+          '<div style="font-size:12px;color:#475569;margin-top:2px;">' + esc((r.students || []).map(function (s) { return s.name; }).join(', ') || '-') + '</div>' +
+        '</td>' +
+        judgeInputs +
+        '<td style="text-align:center;font-weight:800;color:#047857;" id="seAvg_' + esc(r.id) + '">' + calcRowAvg(r.id) + '</td>' +
+        '<td style="text-align:right;"><button type="button" class="btn btn-primary btn-xs se-save-one" data-reg="' + esc(r.id) + '"' + (isApproved ? ' disabled' : '') + '>💾 บันทึก</button></td>' +
+      '</tr>';
+    }).join('');
+
+    main.innerHTML =
+      '<div class="stack">' +
+        '<div class="card stack">' +
+          '<div class="row-between">' +
+            '<div><h2 style="margin:0;">📝 บันทึกผลคะแนนการแข่งขัน (รายทีม แยกตามกรรมการ)</h2><p style="margin:4px 0 0;font-size:13px;color:#64748b;">ผู้ดูแลระบบและผู้จัดการแข่งขันสามารถบันทึกหรือแก้ไขคะแนนรายทีมตามจำนวนกรรมการได้ จนกว่าจะอนุมัติผลการแข่งขัน</p></div>' +
+            '<button type="button" class="btn btn-primary" id="btnSaveAllScoreEntry"' + ((isApproved || assignedJudges.length === 0 || activeRegs.length === 0) ? ' disabled' : '') + '>✓ บันทึกผลคะแนนทั้งหมด</button>' +
+          '</div>' +
+          '<div class="grid-2">' +
+            '<div><label class="field-label">เลือกกิจกรรมการแข่งขัน</label><select class="select" id="seCompSel">' + state.competitions.map(function (c, i) { return '<option value="' + esc(c.id) + '"' + (c.id === comp.id ? ' selected' : '') + '>' + (i + 1) + '. ' + esc(c.name) + ' (' + esc(c.type) + ')</option>'; }).join('') + '</select></div>' +
+            '<div><label class="field-label">เลือกระดับชั้น</label><select class="select" id="seLvlSel">' + comp.levels.map(function (l) { return '<option value="' + esc(l) + '"' + (l === resolvedLevel ? ' selected' : '') + '>' + esc(l) + '</option>'; }).join('') + '</select></div>' +
+          '</div>' +
+          (isTwoRound
+            ? '<div class="row-wrap" style="padding-top:4px;">' +
+                '<span style="font-size:12.5px;font-weight:700;color:#475569;">รอบการบันทึกคะแนน:</span>' +
+                '<button type="button" class="tab-btn ' + (activeRound === 'qualifying' ? 'active-amber' : '') + '" id="btnSeRoundQual">รอบที่ 1: รอบคัดเลือก</button>' +
+                '<button type="button" class="tab-btn ' + (activeRound === 'final' ? 'active' : '') + '" id="btnSeRoundFinal">รอบที่ 2: รอบตัดสิน (ลำดับ 1–10)</button>' +
+              '</div>'
+            : '') +
+          (isApproved ? '<div class="card-compact" style="background:#ecfdf5;border-color:#a7f3d0;color:#065f46;font-weight:700;">🔒 ผู้ดูแลระบบอนุมัติผลการแข่งขันรายการนี้แล้ว ระบบล็อกการบันทึกและแก้ไขคะแนน</div>' : '') +
+          ((currentMeta.judgeCompleted && !isApproved) ? '<div class="card-compact" style="background:#f0fdfa;border-color:#99f6e4;color:#0f766e;font-weight:700;">✓ ประธานกรรมการแจ้งการตัดสินเสร็จสมบูรณ์แล้ว' + (currentMeta.judgeCompletedBy ? ' (โดย ' + esc(currentMeta.judgeCompletedBy) + ')' : '') + ' — รอผู้ดูแลระบบอนุมัติผล</div>' : '') +
+        '</div>' +
+        '<div class="card stack">' +
+          '<div class="row-between" style="font-size:13px;color:#475569;">' +
+            '<div>ทีมที่เข้าร่วมบันทึกคะแนน: <strong>' + activeRegs.length + '</strong> ทีม' + (absentCount > 0 ? ' <span style="color:#be123c;font-weight:700;">(งดคิดคะแนน/ไม่เข้าร่วม ' + absentCount + ' ทีม)</span>' : '') + '</div>' +
+            '<div>กรรมการประจำกิจกรรม/ระดับนี้: <strong>' + assignedJudges.length + '</strong> ท่าน</div>' +
+          '</div>' +
+          (assignedJudges.length === 0
+            ? '<div class="card-compact" style="background:#fffbeb;border-color:#fde68a;color:#92400e;text-align:center;padding:20px;font-weight:700;">ยังไม่มีรายชื่อกรรมการตัดสินในกิจกรรมและระดับชั้นนี้ กรุณาเพิ่มกรรมการที่เมนู &quot;จัดการระบบ (Admin)&quot; ก่อนบันทึกคะแนน</div>'
+            : activeRegs.length === 0
+            ? '<div class="card-compact" style="background:#f8fafc;color:#64748b;text-align:center;padding:20px;">ยังไม่มีทีมผู้เข้าแข่งขัน (หรือถูกแจ้งไม่เข้าร่วมทั้งหมด) ในกิจกรรมและระดับชั้นนี้</div>'
+            : '<div class="table-wrap"><table class="data-table"><thead><tr><th style="text-align:center;">ที่</th><th>โรงเรียน / ผู้เข้าแข่งขัน</th>' + judgeHeaders + '<th style="text-align:center;">คะแนนเฉลี่ย</th><th style="text-align:right;">บันทึก</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>') +
+        '</div>' +
+      '</div>';
+
+    document.getElementById('seCompSel').onchange = function (e) {
+      const nextComp = getComp(e.target.value) || state.competitions[0];
+      state.scoreEntryCompId = nextComp.id;
+      state.scoreEntryLevel = nextComp.levels[0] || '';
+      state.scoreEntryRound = 'qualifying';
+      state.scoreEntryDrafts = {};
+      renderAll();
+    };
+    document.getElementById('seLvlSel').onchange = function (e) {
+      state.scoreEntryLevel = e.target.value;
+      state.scoreEntryDrafts = {};
+      renderAll();
+    };
+    if (isTwoRound) {
+      document.getElementById('btnSeRoundQual').onclick = function () { state.scoreEntryRound = 'qualifying'; state.scoreEntryDrafts = {}; renderAll(); };
+      document.getElementById('btnSeRoundFinal').onclick = function () { state.scoreEntryRound = 'final'; state.scoreEntryDrafts = {}; renderAll(); };
+    }
+    main.querySelectorAll('.se-inp').forEach(function (inp) {
+      inp.oninput = function () {
+        const regId = inp.getAttribute('data-reg');
+        const jdgId = inp.getAttribute('data-jdg');
+        if (!state.scoreEntryDrafts[regId]) state.scoreEntryDrafts[regId] = {};
+        state.scoreEntryDrafts[regId][jdgId] = inp.value;
+        const avgEl = document.getElementById('seAvg_' + regId);
+        if (avgEl) avgEl.textContent = calcRowAvg(regId);
+      };
+    });
+    async function saveScoreRows(targetRegs) {
+      if (isApproved) { showToast('ผู้ดูแลระบบอนุมัติผลการแข่งขันแล้ว ไม่สามารถบันทึกหรือแก้ไขคะแนนได้', 'error'); return; }
+      const entries = targetRegs.map(function (reg) {
+        const payloadScores = {};
+        assignedJudges.forEach(function (j) {
+          if (state.recusedJudges[reg.id] && state.recusedJudges[reg.id][j.id]) return;
+          const raw = getCellVal(reg.id, j.id).trim();
+          if (raw === '') {
+            payloadScores[j.id] = '';
+          } else {
+            const num = Number(raw);
+            if (!Number.isFinite(num) || num < 0 || num > 100) {
+              throw new Error('คะแนนต้องอยู่ระหว่าง 0 - 100 (' + j.name + ')');
+            }
+            payloadScores[j.id] = num;
+          }
+        });
+        return { registrationId: reg.id, judgeScores: payloadScores };
+      });
+      const res = await apiCall('save_admin_scores', {
+        competitionId: comp.id,
+        level: resolvedLevel,
+        round: isTwoRound ? activeRound : undefined,
+        entries: entries,
+      });
+      targetRegs.forEach(function (r) { delete state.scoreEntryDrafts[r.id]; });
+      showToast(res.message);
+      renderAll();
+    }
+    main.querySelectorAll('.se-save-one').forEach(function (btn) {
+      btn.onclick = async function () {
+        const r = activeRegs.find(function (x) { return x.id === btn.getAttribute('data-reg'); });
+        if (!r) return;
+        try { await saveScoreRows([r]); } catch (err) { showToast(err.message, 'error'); }
+      };
+    });
+    document.getElementById('btnSaveAllScoreEntry').onclick = async function () {
+      try { await saveScoreRows(activeRegs); } catch (err) { showToast(err.message, 'error'); }
+    };
   }
 
   function renderAdminManage(main) {
@@ -2619,6 +3051,7 @@
     const editSch = state.editingSchoolId ? getSchool(state.editingSchoolId) : null;
     const editJdg = state.editingJudgeId ? getJudge(state.editingJudgeId) : null;
     const editMgr = state.editingManagerId ? getManager(state.editingManagerId) : null;
+    const editRegUser = state.editingRegistrarId ? getRegistrar(state.editingRegistrarId) : null;
     const jdgComp = getComp(editJdg ? editJdg.competitionId : 'comp-1') || state.competitions[0];
 
     main.innerHTML =
@@ -2676,6 +3109,9 @@
             '<input type="text" class="input" id="admJdgPos" value="' + esc(editJdg ? editJdg.position : 'กรรมการตัดสิน') + '" placeholder="ตำแหน่ง" />' +
             '<select class="select" id="admJdgComp">' + state.competitions.map(function (c) { return '<option value="' + esc(c.id) + '"' + (jdgComp.id === c.id ? ' selected' : '') + '>' + esc(c.name) + '</option>'; }).join('') + '</select>' +
             '<select class="select" id="admJdgLvl">' + jdgComp.levels.map(function (l) { return '<option value="' + esc(l) + '"' + (editJdg && editJdg.level === l ? ' selected' : '') + '>' + esc(l) + '</option>'; }).join('') + '</select>' +
+            '<select class="select" id="admJdgSchool" style="grid-column:1 / -1;"><option value="">-- ไม่ระบุสังกัดโรงเรียน (หากเป็นครู/บุคลากรจากโรงเรียนให้เลือก เพื่อใช้ปุ่มไม่ตัดสินโรงเรียนตน) --</option>' +
+              state.schools.map(function (s) { return '<option value="' + esc(s.id) + '"' + ((state.editingJudgeSchoolId || '') === s.id ? ' selected' : '') + '>' + esc(s.name) + '</option>'; }).join('') +
+            '</select>' +
             '<div class="card-compact row-between" style="grid-column:1 / -1;background:#f8fafc;">' +
               '<div class="row-wrap">' +
                 (safeImg(state.editingJudgePhotoDraft)
@@ -2687,16 +3123,17 @@
               '<div class="row-wrap"><button type="submit" class="btn btn-sky">' + (editJdg ? 'บันทึกแก้ไขกรรมการ' : '+ เพิ่มกรรมการ') + '</button>' + (editJdg ? '<button type="button" class="btn btn-outline" id="btnCancelJdgEdit">ยกเลิก</button>' : '') + '</div>' +
             '</div>' +
           '</form>' +
-          '<div class="table-wrap"><table class="data-table"><thead><tr><th>Username</th><th>ชื่อ-สกุล</th><th>กิจกรรม / ระดับ</th><th>จัดการ</th></tr></thead><tbody>' +
+          '<div class="table-wrap"><table class="data-table"><thead><tr><th>Username</th><th>ชื่อ-สกุล</th><th>กิจกรรม / ระดับ / สังกัด</th><th>จัดการ</th></tr></thead><tbody>' +
             state.judges.map(function (j) {
               const jc = getComp(j.competitionId);
-              return '<tr><td>' + esc(j.username) + '</td><td><strong>' + esc(j.name) + '</strong></td><td>' + esc(jc ? jc.name : '-') + ' • ' + esc(j.level) + '</td><td><button type="button" class="btn btn-outline btn-xs adm-jdg-edit" data-id="' + esc(j.id) + '">แก้ไข</button> <button type="button" class="btn btn-rose btn-xs adm-jdg-del" data-id="' + esc(j.id) + '">ลบ</button></td></tr>';
+              const js = j.schoolId ? getSchool(j.schoolId) : null;
+              return '<tr><td>' + esc(j.username) + '</td><td><strong>' + esc(j.name) + '</strong><div style="font-size:11.5px;color:#64748b;">' + esc(j.position || 'กรรมการตัดสิน') + '</div></td><td>' + esc(jc ? jc.name : '-') + ' • ' + esc(j.level) + (js ? '<div style="font-size:11.5px;color:#0369a1;">สังกัด: ' + esc(js.name) + '</div>' : '') + '</td><td><button type="button" class="btn btn-outline btn-xs adm-jdg-edit" data-id="' + esc(j.id) + '">แก้ไข</button> <button type="button" class="btn btn-rose btn-xs adm-jdg-del" data-id="' + esc(j.id) + '">ลบ</button></td></tr>';
             }).join('') +
           '</tbody></table></div>' +
         '</div>' +
 
         '<div class="card stack">' +
-          '<div><h3 style="margin:0;">📄 จัดการบัญชีผู้จัดการแข่งขัน (' + state.managers.length + ' ท่าน)</h3><p style="margin:4px 0 0;font-size:12.5px;color:#64748b;">ผู้จัดการแข่งขันสามารถเข้าใช้งานได้เฉพาะเมนู &quot;การจัดการแข่งขัน&quot; เท่านั้น</p></div>' +
+          '<div><h3 style="margin:0;">📄 จัดการบัญชีผู้จัดการแข่งขัน (' + state.managers.length + ' ท่าน)</h3><p style="margin:4px 0 0;font-size:12.5px;color:#64748b;">ผู้จัดการแข่งขันสามารถจัดการเอกสาร เกณฑ์การตัดสิน ลงทะเบียนเข้าร่วม และบันทึกผลคะแนนได้</p></div>' +
           '<form id="admMgrForm" class="grid-3">' +
             '<input type="text" class="input" id="admMgrUser" value="' + esc(editMgr ? editMgr.username : '') + '" placeholder="Username *" required />' +
             '<input type="password" class="input" id="admMgrPass" placeholder="' + (editMgr ? 'รหัสผ่านใหม่ (เว้นว่างหากไม่เปลี่ยน)' : 'รหัสผ่าน (อย่างน้อย 4 ตัว) *') + '" />' +
@@ -2706,8 +3143,24 @@
           '</form>' +
           '<div class="table-wrap"><table class="data-table"><thead><tr><th>Username</th><th>ชื่อ-นามสกุล</th><th>เบอร์ติดต่อ</th><th>สิทธิ์การใช้งาน</th><th>จัดการ</th></tr></thead><tbody>' +
             (state.managers.map(function (m) {
-              return '<tr><td>' + esc(m.username) + '</td><td><strong>' + esc(m.name) + '</strong></td><td>' + esc(m.phone || '-') + '</td><td><span class="badge badge-sky">เฉพาะ การจัดการแข่งขัน</span></td><td><button type="button" class="btn btn-outline btn-xs adm-mgr-edit" data-id="' + esc(m.id) + '">แก้ไข</button> <button type="button" class="btn btn-rose btn-xs adm-mgr-del" data-id="' + esc(m.id) + '">ลบ</button></td></tr>';
+              return '<tr><td>' + esc(m.username) + '</td><td><strong>' + esc(m.name) + '</strong></td><td>' + esc(m.phone || '-') + '</td><td><span class="badge badge-sky">การจัดการแข่งขัน &amp; กรอกคะแนน</span></td><td><button type="button" class="btn btn-outline btn-xs adm-mgr-edit" data-id="' + esc(m.id) + '">แก้ไข</button> <button type="button" class="btn btn-rose btn-xs adm-mgr-del" data-id="' + esc(m.id) + '">ลบ</button></td></tr>';
             }).join('') || '<tr><td colspan="5" style="text-align:center;padding:18px;color:#94a3b8;">ยังไม่มีผู้จัดการแข่งขันในระบบ</td></tr>') +
+          '</tbody></table></div>' +
+        '</div>' +
+
+        '<div class="card stack">' +
+          '<div><h3 style="margin:0;">📋 จัดการบัญชีเจ้าหน้าที่ลงทะเบียน (' + state.registrars.length + ' ท่าน)</h3><p style="margin:4px 0 0;font-size:12.5px;color:#64748b;">เจ้าหน้าที่ลงทะเบียนสามารถเข้าใช้งานเมนูลงทะเบียนเข้าร่วมแข่งขัน (รายงานตัว) สมัครแข่งขัน และดูตาราง/ผลคะแนนได้</p></div>' +
+          '<form id="admRegUserForm" class="grid-3">' +
+            '<input type="text" class="input" id="admRegUser" value="' + esc(editRegUser ? editRegUser.username : '') + '" placeholder="Username *" required />' +
+            '<input type="password" class="input" id="admRegPass" placeholder="' + (editRegUser ? 'รหัสผ่านใหม่ (เว้นว่างหากไม่เปลี่ยน)' : 'รหัสผ่าน (อย่างน้อย 4 ตัว) *') + '" />' +
+            '<input type="text" class="input" id="admRegName" value="' + esc(editRegUser ? editRegUser.name : '') + '" placeholder="ชื่อ-นามสกุลเจ้าหน้าที่ลงทะเบียน *" required />' +
+            '<input type="text" class="input" id="admRegPhone" value="' + esc(editRegUser ? editRegUser.phone : '') + '" placeholder="เบอร์โทรศัพท์ติดต่อ" />' +
+            '<div class="row-wrap"><button type="submit" class="btn btn-primary">' + (editRegUser ? 'บันทึกแก้ไขเจ้าหน้าที่ลงทะเบียน' : '+ เพิ่มเจ้าหน้าที่ลงทะเบียน') + '</button>' + (editRegUser ? '<button type="button" class="btn btn-outline" id="btnCancelRegUserEdit">ยกเลิก</button>' : '') + '</div>' +
+          '</form>' +
+          '<div class="table-wrap"><table class="data-table"><thead><tr><th>Username</th><th>ชื่อ-นามสกุล</th><th>เบอร์ติดต่อ</th><th>สิทธิ์การใช้งาน</th><th>จัดการ</th></tr></thead><tbody>' +
+            (state.registrars.map(function (ru) {
+              return '<tr><td>' + esc(ru.username) + '</td><td><strong>' + esc(ru.name) + '</strong></td><td>' + esc(ru.phone || '-') + '</td><td><span class="badge badge-emerald">เฉพาะ ลงทะเบียนเข้าร่วมแข่งขัน</span></td><td><button type="button" class="btn btn-outline btn-xs adm-regu-edit" data-id="' + esc(ru.id) + '">แก้ไข</button> <button type="button" class="btn btn-rose btn-xs adm-regu-del" data-id="' + esc(ru.id) + '">ลบ</button></td></tr>';
+            }).join('') || '<tr><td colspan="5" style="text-align:center;padding:18px;color:#94a3b8;">ยังไม่มีเจ้าหน้าที่ลงทะเบียนในระบบ</td></tr>') +
           '</tbody></table></div>' +
         '</div>' +
 
@@ -2814,6 +3267,9 @@
     if (document.getElementById('btnClearJdgPhoto')) {
       document.getElementById('btnClearJdgPhoto').onclick = function () { state.editingJudgePhotoDraft = ''; renderAll(); };
     }
+    document.getElementById('admJdgSchool').onchange = function (e) {
+      state.editingJudgeSchoolId = e.target.value;
+    };
     document.getElementById('admJdgForm').onsubmit = async function (e) {
       e.preventDefault();
       try {
@@ -2825,20 +3281,23 @@
           position: document.getElementById('admJdgPos').value,
           competitionId: document.getElementById('admJdgComp').value,
           level: document.getElementById('admJdgLvl').value,
+          schoolId: document.getElementById('admJdgSchool').value || '',
           photoUrl: state.editingJudgePhotoDraft || '',
         });
         state.editingJudgeId = null;
         state.editingJudgePhotoDraft = '';
+        state.editingJudgeSchoolId = '';
         showToast(res.message); renderAll();
       } catch (err) { showToast(err.message, 'error'); }
     };
-    if (document.getElementById('btnCancelJdgEdit')) document.getElementById('btnCancelJdgEdit').onclick = function () { state.editingJudgeId = null; state.editingJudgePhotoDraft = ''; renderAll(); };
+    if (document.getElementById('btnCancelJdgEdit')) document.getElementById('btnCancelJdgEdit').onclick = function () { state.editingJudgeId = null; state.editingJudgePhotoDraft = ''; state.editingJudgeSchoolId = ''; renderAll(); };
     main.querySelectorAll('.adm-jdg-edit').forEach(function (b) {
       b.onclick = function () {
         const jId = b.getAttribute('data-id');
         const target = getJudge(jId);
         state.editingJudgeId = jId;
         state.editingJudgePhotoDraft = target ? (target.photoUrl || '') : '';
+        state.editingJudgeSchoolId = target ? (target.schoolId || '') : '';
         renderAll();
       };
     });
@@ -2880,6 +3339,34 @@
       };
     });
 
+    document.getElementById('admRegUserForm').onsubmit = async function (e) {
+      e.preventDefault();
+      try {
+        const res = await apiCall('save_admin_registrar', {
+          id: state.editingRegistrarId,
+          username: document.getElementById('admRegUser').value,
+          password: document.getElementById('admRegPass').value,
+          name: document.getElementById('admRegName').value,
+          phone: document.getElementById('admRegPhone').value,
+        });
+        state.editingRegistrarId = null;
+        showToast(res.message); renderAll();
+      } catch (err) { showToast(err.message, 'error'); }
+    };
+    if (document.getElementById('btnCancelRegUserEdit')) document.getElementById('btnCancelRegUserEdit').onclick = function () { state.editingRegistrarId = null; renderAll(); };
+    main.querySelectorAll('.adm-regu-edit').forEach(function (b) {
+      b.onclick = function () { state.editingRegistrarId = b.getAttribute('data-id'); renderAll(); };
+    });
+    main.querySelectorAll('.adm-regu-del').forEach(function (b) {
+      b.onclick = function () {
+        const ruId = b.getAttribute('data-id');
+        openConfirmModal('ยืนยันลบเจ้าหน้าที่ลงทะเบียน', 'ต้องการลบบัญชีเจ้าหน้าที่ลงทะเบียนท่านนี้ใช่หรือไม่?', async function () {
+          try { const res = await apiCall('delete_admin_registrar', { id: ruId }); showToast(res.message); renderAll(); }
+          catch (err) { showToast(err.message, 'error'); }
+        });
+      };
+    });
+
     document.getElementById('admCredForm').onsubmit = async function (e) {
       e.preventDefault();
       try {
@@ -2904,6 +3391,13 @@
     const isTwoRound = isTwoRoundComp(jdg.competitionId);
     const activeRound = state.judgeScoringRound || 'qualifying';
     const activeRoundLabel = activeRound === 'final' ? 'รอบตัดสิน' : 'รอบคัดเลือก';
+    const isChairman = String(jdg.position || '').indexOf('ประธาน') !== -1 && String(jdg.position || '').indexOf('รองประธาน') === -1;
+    const metaKey = jdg.competitionId + '__' + jdg.level;
+    const meta = state.evalMeta[metaKey] || {};
+    const isApproved = Boolean(meta.approved);
+    const isJudgeCompleted = Boolean(meta.judgeCompleted);
+    const ownSchool = jdg.schoolId ? getSchool(jdg.schoolId) : null;
+
     const baseRegs = state.registrations.filter(function (r) { return r.competitionId === jdg.competitionId && r.level === jdg.level; });
     const rankedList = isTwoRound ? buildCompetitionRankedList(jdg.competitionId, jdg.level) : [];
     const qualRankMap = {};
@@ -2924,6 +3418,8 @@
     const cards = regs.map(function (reg, idx) {
       const sch = getSchool(reg.schoolId);
       const isAbsent = Boolean(state.absentRegs[reg.id]);
+      const isRecused = Boolean(state.recusedJudges[reg.id] && state.recusedJudges[reg.id][jdg.id]);
+      const isOwnSchool = Boolean(jdg.schoolId && reg.schoolId === jdg.schoolId);
       const qRank = qualRankMap[reg.id] !== undefined ? qualRankMap[reg.id] : null;
       const isTop10Qual = qRank !== null && qRank <= 10;
       const hasRoundStore = Boolean(state.roundScores[reg.id] || state.roundScoreCriteriaDetails[reg.id]);
@@ -2935,13 +3431,15 @@
         : (state.scores[reg.id] ? state.scores[reg.id][jdg.id] : undefined);
       const isLocked = savedScore !== undefined && !state.unlockedScoreCards[reg.id];
       const draft = state.draftCriteriaScores[reg.id] || {};
-      const inputsHtml = crit.map(function (c) {
-        const val = draft[c.key] !== undefined ? draft[c.key] : '';
-        return '<div class="row-between" style="gap:10px;padding:6px 0;border-bottom:1px solid #f1f5f9;">' +
-          '<span style="font-size:13px;">' + esc(c.label) + ' <strong style="color:#b45309;">(เต็ม ' + esc(c.max) + ')</strong></span>' +
-          '<input type="number" min="0" max="' + esc(c.max) + '" step="0.5" class="input crit-inp" style="width:110px;text-align:right;" data-reg="' + esc(reg.id) + '" data-key="' + esc(c.key) + '" data-max="' + esc(c.max) + '" value="' + esc(val) + '"' + ((isAbsent || isLocked) ? ' disabled' : '') + ' />' +
-        '</div>';
-      }).join('');
+      const inputsHtml = isRecused
+        ? '<div style="padding:12px 14px;border-radius:10px;background:#fffbeb;border:1px solid #fde68a;color:#92400e;font-size:13px;">⚠ ท่านเลือกไม่ตัดสินลงคะแนนให้ทีมนี้ ระบบจะไม่นำคะแนนของท่านมาคิดคำนวณ (คิดค่าเฉลี่ยจากกรรมการท่านอื่นที่ตัดสิน)</div>'
+        : crit.map(function (c) {
+            const val = draft[c.key] !== undefined ? draft[c.key] : '';
+            return '<div class="row-between" style="gap:10px;padding:6px 0;border-bottom:1px solid #f1f5f9;">' +
+              '<span style="font-size:13px;">' + esc(c.label) + ' <strong style="color:#b45309;">(เต็ม ' + esc(c.max) + ')</strong></span>' +
+              '<input type="number" min="0" max="' + esc(c.max) + '" step="0.5" class="input crit-inp" style="width:110px;text-align:right;" data-reg="' + esc(reg.id) + '" data-key="' + esc(c.key) + '" data-max="' + esc(c.max) + '" value="' + esc(val) + '"' + ((isAbsent || isLocked || isApproved || isRecused) ? ' disabled' : '') + ' />' +
+            '</div>';
+          }).join('');
 
       const sumVal = crit.reduce(function (acc, c) {
         const v = Number(draft[c.key]);
@@ -2960,23 +3458,44 @@
             : '<span class="badge badge-slate">คัดเลือกอันดับที่ ' + qRank + ' (ไม่เข้าเกณฑ์ 1–10)</span> ')
         : '';
 
-      return '<div class="card stack-sm" style="' + (isAbsent ? 'opacity:0.65;background:#fff1f2;' : '') + '">' +
+      const cardBgStyle = isAbsent
+        ? 'opacity:0.65;background:#fff1f2;'
+        : (isRecused ? 'background:#fffbeb;border-color:#fde68a;' : '');
+
+      return '<div class="card stack-sm" style="' + cardBgStyle + '">' +
         '<div class="row-between">' +
           '<div><span class="badge badge-sky">ทีมที่ ' + (idx + 1) + '</span> ' +
           (isTwoRound ? '<span class="badge badge-amber">' + esc(activeRoundLabel) + '</span> ' : '') +
           qualRankBadge +
+          (isOwnSchool ? '<span class="badge badge-amber">🏫 ทีมโรงเรียนของตน</span> ' : '') +
+          (isRecused ? '<span class="badge badge-rose">งดเว้นไม่ตัดสินลงคะแนน</span> ' : '') +
           '<h3 style="margin:6px 0 2px;">' + esc(sch ? sch.name : '-') + '</h3>' +
           '<div style="font-size:13px;color:#475569;">ผู้เข้าแข่งขัน: ' + esc((reg.students || []).map(function (s) { return s.name; }).join(', ')) + '</div>' +
           songMetaHtml + '</div>' +
           '<div class="row-wrap">' +
-            (isAbsent ? '<span class="badge badge-rose">ไม่เข้าร่วมแข่งขัน</span>' : '<span class="badge badge-amber" style="font-size:14px;">รวม: <span id="sum_' + esc(reg.id) + '">' + sumVal.toFixed(2) + '</span> / 100</span>') +
-            (!isAbsent && isLocked ? '<button type="button" class="btn btn-outline btn-xs jdg-unlock" data-reg="' + esc(reg.id) + '">✏ แก้ไขคะแนน</button>' : '') +
-            (!isAbsent && !isLocked ? '<button type="button" class="btn btn-primary btn-xs jdg-save-one" data-reg="' + esc(reg.id) + '">💾 บันทึกทีมนี้</button>' : '') +
+            (isAbsent
+              ? '<span class="badge badge-rose">ไม่เข้าร่วมแข่งขัน</span>'
+              : (isRecused
+                  ? '<span class="badge badge-amber" style="font-size:13px;">งดเว้นลงคะแนน</span>'
+                  : '<span class="badge badge-amber" style="font-size:14px;">รวม: <span id="sum_' + esc(reg.id) + '">' + sumVal.toFixed(2) + '</span> / 100</span>')) +
+            (!isAbsent
+              ? '<button type="button" class="btn ' + (isRecused ? 'btn-amber' : 'btn-outline') + ' btn-xs jdg-recuse" data-reg="' + esc(reg.id) + '" data-next="' + (isRecused ? '0' : '1') + '"' + (isApproved ? ' disabled' : '') + '>' + (isRecused ? '↩ ยกเลิกไม่ตัดสินลงคะแนน' : '🚫 ไม่ตัดสินลงคะแนน (ทีมโรงเรียนของตน)') + '</button>'
+              : '') +
+            (!isAbsent && !isRecused && isLocked ? '<button type="button" class="btn btn-outline btn-xs jdg-unlock" data-reg="' + esc(reg.id) + '"' + (isApproved ? ' disabled' : '') + '>✏ แก้ไขคะแนน</button>' : '') +
+            (!isAbsent && !isRecused && !isLocked ? '<button type="button" class="btn btn-primary btn-xs jdg-save-one" data-reg="' + esc(reg.id) + '"' + (isApproved ? ' disabled' : '') + '>💾 บันทึกทีมนี้</button>' : '') +
           '</div>' +
         '</div>' +
         inputsHtml +
       '</div>';
     }).join('');
+
+    const statusBannersHtml =
+      (isApproved
+        ? '<div class="card" style="border-color:#cbd5e1;background:#f8fafc;color:#334155;"><strong>🔒 ผู้ดูแลระบบอนุมัติผลคะแนนรายการและระดับชั้นนี้แล้ว</strong> จึงไม่สามารถบันทึกหรือแก้ไขคะแนนเพิ่มเติมได้</div>'
+        : '') +
+      (!isApproved && isJudgeCompleted
+        ? '<div class="card" style="border-color:#a7f3d0;background:#ecfdf5;color:#065f46;"><strong>✓ ประธานกรรมการตัดสินได้แจ้งการตัดสินเสร็จสมบูรณ์ทุกโรงเรียนไปยังผู้ดูแลระบบแล้ว</strong> (รอผู้ดูแลระบบตรวจสอบและอนุมัติผลคะแนน)</div>'
+        : '');
 
     const roundSwitcherHtml = isTwoRound
       ? '<div class="card row-between" style="border-color:#fde68a;background:#fffbeb;">' +
@@ -2988,12 +3507,22 @@
         '</div>'
       : '';
 
+    const chairmanBtnHtml = isChairman
+      ? '<button type="button" class="btn ' + (isJudgeCompleted ? 'btn-emerald' : 'btn-amber') + '" id="btnToggleChairmanComplete"' + (isApproved ? ' disabled' : '') + '>' +
+          (isJudgeCompleted ? '✓ แจ้งเสร็จสมบูรณ์แล้ว (คลิกยกเลิก)' : '📢 แจ้งการตัดสินว่าเสร็จสมบูรณ์ทุกโรงเรียน') +
+        '</button>'
+      : '';
+
     main.innerHTML =
       '<div class="stack">' +
         '<div class="card row-between">' +
-          '<div><h2 style="margin:0;">⚖ ลงคะแนนตัดสิน: ' + esc(comp ? comp.name : '-') + '</h2><p style="margin:4px 0 0;font-size:13px;color:#64748b;">ระดับ: ' + esc(jdg.level) + ' • กรรมการ: ' + esc(jdg.name) + (isTwoRound ? ' • ' + activeRoundLabel : '') + '</p></div>' +
-          '<button type="button" class="btn btn-primary" id="btnSaveAllScores">💾 บันทึกคะแนนทั้งหมด</button>' +
+          '<div><h2 style="margin:0;">⚖ ลงคะแนนตัดสิน: ' + esc(comp ? comp.name : '-') + '</h2><p style="margin:4px 0 0;font-size:13px;color:#64748b;">ระดับ: ' + esc(jdg.level) + ' • กรรมการ: ' + esc(jdg.name) + (jdg.position ? ' (' + esc(jdg.position) + ')' : '') + (ownSchool ? ' • สังกัด: ' + esc(ownSchool.name) : '') + (isTwoRound ? ' • ' + activeRoundLabel : '') + '</p></div>' +
+          '<div class="row-wrap">' +
+            chairmanBtnHtml +
+            '<button type="button" class="btn btn-primary" id="btnSaveAllScores"' + (isApproved ? ' disabled' : '') + '>💾 บันทึกคะแนนทั้งหมด</button>' +
+          '</div>' +
         '</div>' +
+        statusBannersHtml +
         roundSwitcherHtml +
         (cards || '<div class="card" style="text-align:center;color:#94a3b8;">ยังไม่มีทีมสมัครแข่งขันในระดับนี้</div>') +
       '</div>';
@@ -3010,6 +3539,15 @@
         state.unlockedScoreCards = {};
         initJudgeDrafts('final');
         renderAll();
+      };
+    }
+
+    if (isChairman && document.getElementById('btnToggleChairmanComplete')) {
+      document.getElementById('btnToggleChairmanComplete').onclick = async function () {
+        try {
+          const res = await apiCall('toggle_judge_complete', { completed: !isJudgeCompleted });
+          showToast(res.message); renderAll();
+        } catch (err) { showToast(err.message, 'error'); }
       };
     }
 
@@ -3035,6 +3573,21 @@
       };
     });
 
+    main.querySelectorAll('.jdg-recuse').forEach(function (btn) {
+      btn.onclick = async function () {
+        const rId = btn.getAttribute('data-reg');
+        const nextRecused = btn.getAttribute('data-next') === '1';
+        try {
+          const res = await apiCall('toggle_judge_recuse', { registrationId: rId, recused: nextRecused });
+          if (nextRecused) {
+            delete state.draftCriteriaScores[rId];
+            delete state.unlockedScoreCards[rId];
+          }
+          showToast(res.message); renderAll();
+        } catch (err) { showToast(err.message, 'error'); }
+      };
+    });
+
     main.querySelectorAll('.jdg-unlock').forEach(function (btn) {
       btn.onclick = function () { state.unlockedScoreCards[btn.getAttribute('data-reg')] = true; renderAll(); };
     });
@@ -3055,7 +3608,7 @@
 
     document.getElementById('btnSaveAllScores').onclick = async function () {
       const entries = regs
-        .filter(function (r) { return !state.absentRegs[r.id]; })
+        .filter(function (r) { return !state.absentRegs[r.id] && !(state.recusedJudges[r.id] && state.recusedJudges[r.id][jdg.id]); })
         .map(function (r) { return { registrationId: r.id, criteria: state.draftCriteriaScores[r.id] || {} }; });
       try {
         const res = await apiCall('save_judge_scores', {
@@ -3136,7 +3689,7 @@
   function renderLogin(main) {
     if (state.activeMenu === 'login') {
       main.innerHTML =
-        '<div class="card" style="max-width:920px;margin:20px auto;">' +
+        '<div class="card" style="max-width:960px;margin:20px auto;">' +
           '<div style="text-align:center;">' +
             '<h2 style="margin:0;">🔑 เข้าสู่ระบบบริหารจัดการการแข่งขัน</h2>' +
             '<p style="margin:6px 0 0;font-size:13.5px;color:#64748b;">กรุณาเลือกประเภทระบบที่ต้องการเข้าสู่ระบบ</p>' +
@@ -3150,7 +3703,12 @@
             '<button type="button" class="role-choice-card" id="btnChooseManagerLogin">' +
               '<div style="width:52px;height:52px;border-radius:16px;background:#f5f3ff;color:#7c3aed;display:flex;align-items:center;justify-content:center;font-size:24px;">📄</div>' +
               '<strong style="font-size:16px;color:#1e293b;">ผู้จัดการแข่งขัน</strong>' +
-              '<span style="font-size:12.5px;color:#64748b;">จัดการเอกสารและเกณฑ์การให้คะแนนแข่งขัน</span>' +
+              '<span style="font-size:12.5px;color:#64748b;">จัดการเอกสาร เกณฑ์ และบันทึกผลคะแนน</span>' +
+            '</button>' +
+            '<button type="button" class="role-choice-card" id="btnChooseRegistrarLogin">' +
+              '<div style="width:52px;height:52px;border-radius:16px;background:#eef2ff;color:#4f46e5;display:flex;align-items:center;justify-content:center;font-size:24px;">📋</div>' +
+              '<strong style="font-size:16px;color:#1e293b;">เจ้าหน้าที่ลงทะเบียน</strong>' +
+              '<span style="font-size:12.5px;color:#64748b;">ลงทะเบียนรายงานตัวผู้เข้าแข่งขันหน้างาน</span>' +
             '</button>' +
             '<button type="button" class="role-choice-card" id="btnChooseSchoolLogin">' +
               '<div style="width:52px;height:52px;border-radius:16px;background:#ecfdf5;color:#059669;display:flex;align-items:center;justify-content:center;font-size:24px;">🏫</div>' +
@@ -3166,6 +3724,7 @@
         '</div>';
       document.getElementById('btnChooseAdminLogin').onclick = function () { selectMenu('login-admin'); };
       document.getElementById('btnChooseManagerLogin').onclick = function () { selectMenu('login-manager'); };
+      document.getElementById('btnChooseRegistrarLogin').onclick = function () { selectMenu('login-registrar'); };
       document.getElementById('btnChooseSchoolLogin').onclick = function () { selectMenu('login-school'); };
       document.getElementById('btnChooseJudgeLogin').onclick = function () { selectMenu('login-judge'); };
       return;
@@ -3175,6 +3734,8 @@
       ? 'admin'
       : state.activeMenu === 'login-manager'
       ? 'manager'
+      : state.activeMenu === 'login-registrar'
+      ? 'registrar'
       : state.activeMenu === 'login-judge'
       ? 'judge'
       : 'school';
@@ -3182,7 +3743,9 @@
     const roleMeta = activeRoleTab === 'admin'
       ? { icon: '🛡', title: 'เข้าสู่ระบบ: ผู้ดูแลระบบ', desc: 'สำหรับผู้ดูแลระบบในการบริหารจัดการข้อมูลและอนุมัติผล' }
       : activeRoleTab === 'manager'
-      ? { icon: '📄', title: 'เข้าสู่ระบบ: ผู้จัดการแข่งขัน', desc: 'สำหรับผู้จัดการแข่งขันในการจัดการเอกสารและเกณฑ์การตัดสิน' }
+      ? { icon: '📄', title: 'เข้าสู่ระบบ: ผู้จัดการแข่งขัน', desc: 'สำหรับผู้จัดการแข่งขันในการจัดการเอกสาร เกณฑ์ และบันทึกคะแนน' }
+      : activeRoleTab === 'registrar'
+      ? { icon: '📋', title: 'เข้าสู่ระบบ: เจ้าหน้าที่ลงทะเบียน', desc: 'สำหรับเจ้าหน้าที่ลงทะเบียนรายงานตัวผู้เข้าแข่งขันหน้างาน' }
       : activeRoleTab === 'judge'
       ? { icon: '⚖', title: 'เข้าสู่ระบบ: ระบบกรรมการ', desc: 'สำหรับคณะกรรมการตัดสินเพื่อบันทึกคะแนนและพิมพ์เอกสาร' }
       : { icon: '🏫', title: 'เข้าสู่ระบบ: ระบบโรงเรียน', desc: 'สำหรับสถานศึกษาในการสมัครแข่งขันและดาวน์โหลดเอกสาร' };
@@ -3212,7 +3775,7 @@
               '<button type="submit" class="btn btn-amber" style="width:100%;margin-top:8px;">สมัครสมาชิกและเข้าสู่ระบบ</button>' +
             '</form>'
           : '<form id="loginForm" class="stack-sm">' +
-              '<div><label class="field-label">' + (activeRoleTab === 'school' ? 'รหัสสถานศึกษา' : 'ชื่อผู้ใช้ (Username)') + '</label><input type="text" class="input" id="loginUser" required placeholder="' + (activeRoleTab === 'school' ? 'เช่น 10112201' : activeRoleTab === 'judge' ? 'เช่น judge1' : activeRoleTab === 'manager' ? 'เช่น manager1' : 'admin') + '" /></div>' +
+              '<div><label class="field-label">' + (activeRoleTab === 'school' ? 'รหัสสถานศึกษา' : 'ชื่อผู้ใช้ (Username)') + '</label><input type="text" class="input" id="loginUser" required placeholder="' + (activeRoleTab === 'school' ? 'เช่น 10112201' : activeRoleTab === 'judge' ? 'เช่น judge1' : activeRoleTab === 'manager' ? 'เช่น manager1' : activeRoleTab === 'registrar' ? 'เช่น reg1' : 'admin') + '" /></div>' +
               '<div><label class="field-label">รหัสผ่าน (Password)</label><input type="password" class="input" id="loginPass" required /></div>' +
               '<button type="submit" class="btn btn-primary" style="width:100%;margin-top:8px;">เข้าสู่ระบบ</button>' +
             '</form>') +
@@ -3235,10 +3798,25 @@
           });
           showToast(res.message);
           const role = state.authSession.role;
-          const fallback = role === 'admin' ? 'admin-manage' : role === 'manager' ? 'admin-competition-manage' : role === 'school' ? 'by-school' : 'judge-scoring';
-          const resolvedPost = (role === 'manager' && state.postLoginRedirect && MANAGER_ALLOWED_MENUS.indexOf(state.postLoginRedirect) !== -1)
-            ? state.postLoginRedirect
-            : (role === 'manager' ? 'admin-competition-manage' : (state.postLoginRedirect || fallback));
+          const fallback = role === 'admin'
+            ? 'admin-manage'
+            : role === 'manager'
+            ? 'admin-competition-manage'
+            : role === 'registrar'
+            ? 'competition-checkin'
+            : role === 'school'
+            ? 'by-school'
+            : 'judge-scoring';
+          let resolvedPost = state.postLoginRedirect || fallback;
+          if (role === 'manager') {
+            resolvedPost = (state.postLoginRedirect && MANAGER_ALLOWED_MENUS.indexOf(state.postLoginRedirect) !== -1)
+              ? state.postLoginRedirect
+              : 'admin-competition-manage';
+          } else if (role === 'registrar') {
+            resolvedPost = (state.postLoginRedirect && REGISTRAR_ALLOWED_MENUS.indexOf(state.postLoginRedirect) !== -1)
+              ? state.postLoginRedirect
+              : 'competition-checkin';
+          }
           state.activeMenu = resolvedPost;
           state.postLoginRedirect = null;
           if (state.activeMenu === 'judge-scoring') initJudgeDrafts();
@@ -3272,6 +3850,9 @@
     if (state.authSession.role === 'manager' && MANAGER_ALLOWED_MENUS.indexOf(state.activeMenu) === -1 && state.activeMenu.indexOf('login') !== 0) {
       return renderAdminCompManage(main);
     }
+    if (state.authSession.role === 'registrar' && REGISTRAR_ALLOWED_MENUS.indexOf(state.activeMenu) === -1 && state.activeMenu.indexOf('login') !== 0) {
+      return renderCompetitionCheckin(main);
+    }
     switch (state.activeMenu) {
       case 'home': return renderHome(main);
       case 'register': return renderRegister(main);
@@ -3286,6 +3867,8 @@
       case 'school-cert': return renderSchoolCert(main);
       case 'school-results': return renderSchoolResults(main);
       case 'results': return renderResults(main);
+      case 'competition-checkin': return renderCompetitionCheckin(main);
+      case 'score-entry': return renderScoreEntry(main);
       case 'admin-competition-manage': return renderAdminCompManage(main);
       case 'admin-manage': return renderAdminManage(main);
       case 'judge-scoring': return renderJudgeScoring(main);
@@ -3293,6 +3876,7 @@
       case 'login':
       case 'login-admin':
       case 'login-manager':
+      case 'login-registrar':
       case 'login-school':
       case 'login-judge':
         return renderLogin(main);

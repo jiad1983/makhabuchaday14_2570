@@ -52,7 +52,8 @@ import {
   ArrowUpDown,
   Filter,
   Medal,
-  UserX
+  UserX,
+  ClipboardCheck
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { toCanvas } from 'html-to-image';
@@ -61,7 +62,7 @@ import { toCanvas } from 'html-to-image';
 // 1. MASTER DATA, TYPES & CONSTANTS (รายการแข่งขัน 10 รายการ & ระดับชั้น)
 // ============================================================================
 
-type RoleType = 'guest' | 'admin' | 'manager' | 'school' | 'judge';
+type RoleType = 'guest' | 'admin' | 'manager' | 'registrar' | 'school' | 'judge';
 
 interface CompetitionItem {
   id: string;
@@ -91,10 +92,19 @@ interface JudgeItem {
   position: string;
   competitionId: string;
   level: string;
+  schoolId?: string;
   photoUrl: string;
 }
 
 interface ManagerItem {
+  id: string;
+  username: string;
+  password: string;
+  name: string;
+  phone: string;
+}
+
+interface RegistrarItem {
   id: string;
   username: string;
   password: string;
@@ -153,7 +163,16 @@ const MANAGER_ALLOWED_MENUS = [
   'results',
   'judge-card',
   'judge-cert',
+  'competition-checkin',
+  'score-entry',
   'admin-competition-manage'
+];
+
+const REGISTRAR_ALLOWED_MENUS = [
+  'home',
+  'competitions',
+  'schedule',
+  'competition-checkin'
 ];
 
 interface CriterionItem {
@@ -166,6 +185,9 @@ interface CriterionItem {
 interface EvalMetaItem {
   status: string;
   approved: boolean;
+  judgeCompleted?: boolean;
+  judgeCompletedAt?: string;
+  judgeCompletedBy?: string;
 }
 
 type EvalMetaMap = Record<string, EvalMetaItem>;
@@ -217,6 +239,7 @@ interface StorageStats {
     schools: number;
     judges: number;
     managers?: number;
+    registrars?: number;
     registrations: number;
     schedules: number;
     scores: number;
@@ -953,9 +976,14 @@ const INITIAL_EVAL_META: EvalMetaMap = {
  * คำนวณคะแนนรวมคิดเป็น 100 คะแนนจากคะแนนกรรมการแต่ละท่าน (เต็ม 100 ต่อท่าน)
  * ใช้ค่าเฉลี่ยของกรรมการที่ให้คะแนนแล้ว เพื่อให้คะแนนรวมอยู่บนฐาน 100 คะแนนเต็ม
  */
-function calculateNormalizedScore(scoresObj?: Record<string, number>) {
+function calculateNormalizedScore(
+  scoresObj?: Record<string, number>,
+  recusedMap?: Record<string, boolean>
+) {
   if (!scoresObj) return { average100: 0, judgeCount: 0, rawSum: 0 };
-  const vals = Object.values(scoresObj).filter((v) => typeof v === 'number' && !Number.isNaN(v));
+  const vals = Object.entries(scoresObj)
+    .filter(([judgeId, v]) => !recusedMap?.[judgeId] && typeof v === 'number' && !Number.isNaN(v))
+    .map(([, v]) => v);
   if (vals.length === 0) return { average100: 0, judgeCount: 0, rawSum: 0 };
   const rawSum = vals.reduce((acc, cur) => acc + cur, 0);
   const average100 = Number((rawSum / vals.length).toFixed(2));
@@ -970,7 +998,8 @@ function getRegRoundBreakdown(
   compId: string,
   regId: string,
   scoresMap: ScoresMap,
-  roundScoresMap: RoundScoresMap
+  roundScoresMap: RoundScoresMap,
+  recusedJudgesMap?: Record<string, Record<string, boolean>>
 ) {
   const isTwoRound = isTwoRoundCompetition(compId);
   if (!isTwoRound) {
@@ -982,11 +1011,12 @@ function getRegRoundBreakdown(
       finalCalc: { average100: 0, judgeCount: 0, rawSum: 0 }
     };
   }
+  const recusedForReg = recusedJudgesMap?.[regId];
   const rs = roundScoresMap[regId] || {};
   const finalScores = rs.final || {};
   const qualScores = rs.qualifying || (Object.keys(finalScores).length === 0 ? scoresMap[regId] || {} : {});
-  const qualifyingCalc = calculateNormalizedScore(qualScores);
-  const finalCalc = calculateNormalizedScore(finalScores);
+  const qualifyingCalc = calculateNormalizedScore(qualScores, recusedForReg);
+  const finalCalc = calculateNormalizedScore(finalScores, recusedForReg);
   const activeRound: SingingRound | null =
     finalCalc.judgeCount > 0 ? 'final' : qualifyingCalc.judgeCount > 0 ? 'qualifying' : null;
   const activeRoundLabel =
@@ -1020,7 +1050,8 @@ function buildCompetitionRankedList(
   registrations: RegistrationItem[],
   scoresMap: ScoresMap,
   roundScoresMap: RoundScoresMap,
-  absentMap: Record<string, boolean>
+  absentMap: Record<string, boolean>,
+  recusedJudgesMap?: Record<string, Record<string, boolean>>
 ): RankedCompetitionEntry[] {
   const normalizedLevel = String(level || '').trim();
   const levelRegs = registrations.filter(
@@ -1032,17 +1063,24 @@ function buildCompetitionRankedList(
     const sorted = levelRegs
       .map((reg, idx) => {
         const isAbsent = Boolean(absentMap[reg.id]);
+        const recusedForReg = recusedJudgesMap?.[reg.id];
         const rawJudgeScores = isAbsent ? {} : scoresMap[reg.id] || {};
-        const calc = isAbsent ? { average100: 0, judgeCount: 0 } : calculateNormalizedScore(rawJudgeScores);
+        const filteredJudgeScores: Record<string, number> = {};
+        Object.entries(rawJudgeScores).forEach(([jid, val]) => {
+          if (!recusedForReg?.[jid]) filteredJudgeScores[jid] = val;
+        });
+        const calc = isAbsent
+          ? { average100: 0, judgeCount: 0 }
+          : calculateNormalizedScore(filteredJudgeScores, recusedForReg);
         const hasScore = !isAbsent && calc.judgeCount > 0;
-        const roundInfo = getRegRoundBreakdown(compId, reg.id, scoresMap, roundScoresMap);
+        const roundInfo = getRegRoundBreakdown(compId, reg.id, scoresMap, roundScoresMap, recusedJudgesMap);
         return {
           reg,
           idx,
           isAbsent,
           hasScore,
           score: calc.average100,
-          judgeScores: rawJudgeScores,
+          judgeScores: filteredJudgeScores,
           roundInfo
         };
       })
@@ -1072,13 +1110,22 @@ function buildCompetitionRankedList(
 
   const baseItems = levelRegs.map((reg, idx) => {
     const isAbsent = Boolean(absentMap[reg.id]);
+    const recusedForReg = recusedJudgesMap?.[reg.id];
     const rs = roundScoresMap[reg.id] || {};
-    const finalScores = isAbsent ? {} : rs.final || {};
+    const rawFinalScores = isAbsent ? {} : rs.final || {};
     const hasRoundStore = Boolean(roundScoresMap[reg.id]);
-    const qualScores = isAbsent
+    const rawQualScores = isAbsent
       ? {}
-      : rs.qualifying || (!hasRoundStore || Object.keys(finalScores).length === 0 ? scoresMap[reg.id] || {} : {});
-    const roundInfo = getRegRoundBreakdown(compId, reg.id, scoresMap, roundScoresMap);
+      : rs.qualifying || (!hasRoundStore || Object.keys(rawFinalScores).length === 0 ? scoresMap[reg.id] || {} : {});
+    const finalScores: Record<string, number> = {};
+    Object.entries(rawFinalScores).forEach(([jid, val]) => {
+      if (!recusedForReg?.[jid]) finalScores[jid] = val;
+    });
+    const qualScores: Record<string, number> = {};
+    Object.entries(rawQualScores).forEach(([jid, val]) => {
+      if (!recusedForReg?.[jid]) qualScores[jid] = val;
+    });
+    const roundInfo = getRegRoundBreakdown(compId, reg.id, scoresMap, roundScoresMap, recusedJudgesMap);
     return {
       reg,
       idx,
@@ -1225,7 +1272,8 @@ function buildRankedEntryLookup(
   registrations: RegistrationItem[],
   scoresMap: ScoresMap,
   roundScoresMap: RoundScoresMap,
-  absentMap: Record<string, boolean>
+  absentMap: Record<string, boolean>,
+  recusedJudgesMap?: Record<string, Record<string, boolean>>
 ): Record<string, RankedCompetitionEntry> {
   const map: Record<string, RankedCompetitionEntry> = {};
   const seenKeys = new Set<string>();
@@ -1240,7 +1288,8 @@ function buildRankedEntryLookup(
       registrations,
       scoresMap,
       roundScoresMap,
-      absentMap
+      absentMap,
+      recusedJudgesMap
     );
     list.forEach((entry) => {
       map[entry.reg.id] = entry;
@@ -1610,7 +1659,7 @@ export default function App() {
   });
 
   // ---------------- Session & Navigation State ----------------
-  // role: 'guest' | 'admin' | 'school' | 'judge'
+  // role: 'guest' | 'admin' | 'manager' | 'registrar' | 'school' | 'judge'
   const [rememberLogin, setRememberLogin] = useState<boolean>(true);
   const [authSession, setAuthSession] = useState<AuthSession>({
     role: 'guest',
@@ -1623,7 +1672,6 @@ export default function App() {
   const [activeMenu, setActiveMenu] = useState<string>(() => readStoredActiveMenu());
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   const [desktopSidebarOpen, setDesktopSidebarOpen] = useState<boolean>(true);
-  const [loginMenuExpanded, setLoginMenuExpanded] = useState<boolean>(true);
   const [topLoginMenuOpen, setTopLoginMenuOpen] = useState<boolean>(false);
   const [postLoginRedirect, setPostLoginRedirect] = useState<string | null>(null);
 
@@ -2168,6 +2216,7 @@ export default function App() {
   const [schools, setSchools] = useState<SchoolItem[]>(INITIAL_SCHOOLS);
   const [judges, setJudges] = useState<JudgeItem[]>(INITIAL_JUDGES);
   const [managers, setManagers] = useState<ManagerItem[]>([]);
+  const [registrars, setRegistrars] = useState<RegistrarItem[]>([]);
   const [schedules, setSchedules] = useState<Record<string, ScheduleItem>>(() => buildInitialSchedules());
   const [registrations, setRegistrations] = useState<RegistrationItem[]>(INITIAL_REGISTRATIONS);
   const [scores, setScores] = useState<ScoresMap>(INITIAL_SCORES);
@@ -2177,6 +2226,7 @@ export default function App() {
   const [checkIns, setCheckIns] = useState<CheckInsMap>({});
   const [evalMeta, setEvalMeta] = useState<EvalMetaMap>(INITIAL_EVAL_META);
   const [absentRegs, setAbsentRegs] = useState<Record<string, boolean>>({});
+  const [recusedJudges, setRecusedJudges] = useState<Record<string, Record<string, boolean>>>({});
 
   // ---------------- UI Filters & Modals ----------------
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -2199,7 +2249,7 @@ export default function App() {
   const [newCriterionLabel, setNewCriterionLabel] = useState<string>('');
   const [newCriterionMax, setNewCriterionMax] = useState<string>('10');
   const [editingCriterionIdx, setEditingCriterionIdx] = useState<number | null>(null);
-  const [loginTab, setLoginTab] = useState<'admin' | 'manager' | 'school' | 'judge'>('school');
+  const [loginTab, setLoginTab] = useState<'admin' | 'manager' | 'registrar' | 'school' | 'judge'>('school');
   const [schoolAuthMode, setSchoolAuthMode] = useState<'login' | 'register'>('login');
 
   // Filter states for various menus
@@ -2208,10 +2258,14 @@ export default function App() {
   const [selectedSchoolFilter, setSelectedSchoolFilter] = useState<string>('all');
   const [adminCompManageId, setAdminCompManageId] = useState<string>(COMPETITIONS[0].id);
   const [adminCompManageLevel, setAdminCompManageLevel] = useState<string>('ทั้งหมด');
-  const [adminCompManageTab, setAdminCompManageTab] = useState<'sheets' | 'registration' | 'criteria'>('sheets');
+  const [adminCompManageTab, setAdminCompManageTab] = useState<'sheets' | 'criteria'>('sheets');
   const [compManageRegMode, setCompManageRegMode] = useState<'team' | 'school'>('team');
   const [compManageCheckinFilter, setCompManageCheckinFilter] = useState<'all' | 'checked_in' | 'pending' | 'absent'>('all');
   const [compManageCheckinSearch, setCompManageCheckinSearch] = useState<string>('');
+  const [scoreEntryCompId, setScoreEntryCompId] = useState<string>(COMPETITIONS[0].id);
+  const [scoreEntryLevel, setScoreEntryLevel] = useState<string>(COMPETITIONS[0].levels[0]);
+  const [scoreEntryRound, setScoreEntryRound] = useState<SingingRound>('qualifying');
+  const [scoreEntryDraft, setScoreEntryDraft] = useState<Record<string, Record<string, string>>>({});
   const [judgeScoringRound, setJudgeScoringRound] = useState<SingingRound>('qualifying');
   const [cardPrintLayout, setCardPrintLayout] = useState<'4-up' | '1-up'>('4-up');
   const [certRecipientType, setCertRecipientType] = useState<'student' | 'coach' | 'director'>('student');
@@ -2335,6 +2389,7 @@ export default function App() {
     position: string;
     competitionId: string;
     level: string;
+    schoolId: string;
     photoUrl: string;
   }>({
     id: null,
@@ -2344,11 +2399,27 @@ export default function App() {
     position: 'กรรมการตัดสิน',
     competitionId: COMPETITIONS[0].id,
     level: COMPETITIONS[0].levels[0],
+    schoolId: '',
     photoUrl: ''
   });
 
   // Admin: Add/Edit Manager form
   const [adminManagerForm, setAdminManagerForm] = useState<{
+    id: string | null;
+    username: string;
+    password: string;
+    name: string;
+    phone: string;
+  }>({
+    id: null,
+    username: '',
+    password: '',
+    name: '',
+    phone: ''
+  });
+
+  // Admin: Add/Edit Registrar form
+  const [adminRegistrarForm, setAdminRegistrarForm] = useState<{
     id: string | null;
     username: string;
     password: string;
@@ -2473,6 +2544,9 @@ export default function App() {
     if (Array.isArray(srv.managers)) {
       setManagers(srv.managers);
     }
+    if (Array.isArray(srv.registrars)) {
+      setRegistrars(srv.registrars);
+    }
     if (srv.schedules && typeof srv.schedules === 'object') {
       setSchedules({ ...buildInitialSchedules(), ...srv.schedules });
     }
@@ -2499,6 +2573,9 @@ export default function App() {
     }
     if (srv.absentRegs && typeof srv.absentRegs === 'object') {
       setAbsentRegs(srv.absentRegs);
+    }
+    if (srv.recusedJudges && typeof srv.recusedJudges === 'object') {
+      setRecusedJudges(srv.recusedJudges);
     }
     if (srv.customCriteriaByComp && typeof srv.customCriteriaByComp === 'object') {
       setCustomCriteriaByComp(srv.customCriteriaByComp);
@@ -2648,7 +2725,7 @@ export default function App() {
             apiTokenRef.current = '';
             clearStoredSessionToken();
             setActiveMenu((cur) =>
-              ['home', 'competitions', 'schedule', 'results', 'register', 'login', 'login-admin', 'login-manager', 'login-school', 'login-judge'].includes(cur) ? cur : 'home'
+              ['home', 'competitions', 'schedule', 'results', 'register', 'login', 'login-admin', 'login-manager', 'login-registrar', 'login-school', 'login-judge'].includes(cur) ? cur : 'home'
             );
           } else {
             if (typeof data?.token === 'string' && data.token) {
@@ -2658,6 +2735,10 @@ export default function App() {
             if (restoredRole === 'manager') {
               setActiveMenu((cur) =>
                 MANAGER_ALLOWED_MENUS.includes(cur) ? cur : 'admin-competition-manage'
+              );
+            } else if (restoredRole === 'registrar') {
+              setActiveMenu((cur) =>
+                REGISTRAR_ALLOWED_MENUS.includes(cur) ? cur : 'competition-checkin'
               );
             }
           }
@@ -2744,15 +2825,15 @@ export default function App() {
     };
 
     const base = [
-      { id: 'home', baseLabel: 'หน้าแรก', icon: Home, roles: ['guest', 'admin', 'manager', 'school', 'judge'] },
+      { id: 'home', baseLabel: 'หน้าแรก', icon: Home, roles: ['guest', 'admin', 'manager', 'registrar', 'school', 'judge'] },
       {
         id: 'register',
         baseLabel: 'ระบบสมัครแข่งขัน',
         icon: registrationOpen ? UserPlus : Lock,
         roles: ['guest', 'admin', 'manager', 'school']
       },
-      { id: 'competitions', baseLabel: 'รายการแข่งขัน', icon: ListChecks, roles: ['guest', 'admin', 'manager', 'school', 'judge'] },
-      { id: 'schedule', baseLabel: 'ตารางการแข่งขัน', icon: Calendar, roles: ['guest', 'admin', 'manager', 'school', 'judge'] },
+      { id: 'competitions', baseLabel: 'รายการแข่งขัน', icon: ListChecks, roles: ['guest', 'admin', 'manager', 'registrar', 'school', 'judge'] },
+      { id: 'schedule', baseLabel: 'ตารางการแข่งขัน', icon: Calendar, roles: ['guest', 'admin', 'manager', 'registrar', 'school', 'judge'] },
       { id: 'by-school', baseLabel: 'รายชื่อแยกตามโรงเรียน', icon: Users, roles: ['admin', 'school'] },
       { id: 'by-activity', baseLabel: 'รายชื่อแยกตามกิจกรรม', icon: Layers, roles: ['admin', 'school'] },
       { id: 'student-card', baseLabel: 'พิมพ์บัตรผู้เข้าแข่งขัน', icon: IdCard, roles: ['admin', 'school'] },
@@ -2762,11 +2843,13 @@ export default function App() {
       { id: 'school-cert', baseLabel: 'เกียรติบัตรนักเรียน/ครู/ผอ.โรงเรียน', icon: Award, roles: ['admin', 'school'] },
       { id: 'school-results', baseLabel: 'ผลคะแนนของโรงเรียน', icon: Trophy, roles: ['admin', 'school'] },
       { id: 'results', baseLabel: 'ประกาศผลคะแนน', icon: Trophy, roles: ['guest', 'admin', 'manager', 'judge'] },
+      { id: 'competition-checkin', baseLabel: 'ลงทะเบียนเข้าร่วมแข่งขัน', icon: ClipboardCheck, roles: ['admin', 'manager', 'registrar'] },
+      { id: 'score-entry', baseLabel: 'บันทึกผลคะแนนการแข่งขัน', icon: Edit3, roles: ['admin', 'manager'] },
       { id: 'admin-competition-manage', baseLabel: 'การจัดการแข่งขัน', icon: FileText, roles: ['admin', 'manager'] },
       { id: 'admin-manage', baseLabel: 'จัดการระบบ (Admin)', icon: ShieldCheck, roles: ['admin'] },
       { id: 'judge-scoring', baseLabel: 'ลงคะแนนตัดสิน (กรรมการ)', icon: Gavel, roles: ['judge'] },
       { id: 'judge-absent', baseLabel: 'แจ้งไม่เข้าร่วมแข่งขัน', icon: UserX, roles: ['judge'] },
-      { id: 'login', baseLabel: authSession.role === 'guest' ? 'เข้าสู่ระบบ' : 'เปลี่ยนบัญชี/เข้าสู่ระบบ', icon: LogIn, roles: ['guest', 'admin', 'manager', 'school', 'judge'] }
+      { id: 'login', baseLabel: authSession.role === 'guest' ? 'เข้าสู่ระบบ' : 'เปลี่ยนบัญชี/เข้าสู่ระบบ', icon: LogIn, roles: ['guest', 'admin', 'manager', 'registrar', 'school', 'judge'] }
     ];
 
     return base
@@ -2786,6 +2869,7 @@ export default function App() {
       menuId === 'login' ||
       menuId === 'login-admin' ||
       menuId === 'login-manager' ||
+      menuId === 'login-registrar' ||
       menuId === 'login-school' ||
       menuId === 'login-judge';
 
@@ -2796,9 +2880,17 @@ export default function App() {
       return;
     }
 
+    if (authSession.role === 'registrar' && !REGISTRAR_ALLOWED_MENUS.includes(menuId) && !isLoginTarget) {
+      setTopLoginMenuOpen(false);
+      setActiveMenu('competition-checkin');
+      setMobileMenuOpen(false);
+      return;
+    }
+
     if (
       authSession.role !== 'admin' &&
       authSession.role !== 'manager' &&
+      authSession.role !== 'registrar' &&
       Object.prototype.hasOwnProperty.call(menuPermissions, menuId) &&
       !menuPermissions[menuId]
     ) {
@@ -2818,6 +2910,7 @@ export default function App() {
       setTopLoginMenuOpen(false);
       if (menuId === 'login-admin') setLoginTab('admin');
       else if (menuId === 'login-manager') setLoginTab('manager');
+      else if (menuId === 'login-registrar') setLoginTab('registrar');
       else if (menuId === 'login-school') setLoginTab('school');
       else if (menuId === 'login-judge') setLoginTab('judge');
       if (activeMenu && !activeMenu.startsWith('login') && activeMenu !== 'home') {
@@ -2861,12 +2954,15 @@ export default function App() {
         'school-cert',
         'school-results',
         'results',
+        'competition-checkin',
+        'score-entry',
         'admin-competition-manage',
         'admin-manage',
         'competitions',
         'schedule'
       ],
       manager: MANAGER_ALLOWED_MENUS,
+      registrar: REGISTRAR_ALLOWED_MENUS,
       school: ['register', 'by-school', 'by-activity', 'student-card', 'coach-card', 'school-cert', 'school-results', 'competitions', 'schedule'],
       judge: ['judge-card', 'judge-cert', 'judge-scoring', 'judge-absent', 'results', 'competitions', 'schedule']
     };
@@ -2931,6 +3027,8 @@ export default function App() {
           ? 'admin-manage'
           : nextRole === 'manager'
           ? 'admin-competition-manage'
+          : nextRole === 'registrar'
+          ? 'competition-checkin'
           : nextRole === 'judge'
           ? 'judge-scoring'
           : 'by-school';
@@ -3629,7 +3727,8 @@ export default function App() {
       registrations,
       scores,
       roundScores,
-      absentRegs
+      absentRegs,
+      recusedJudges
     );
 
     const rows = rankedList.map((entry) => {
@@ -4188,7 +4287,7 @@ export default function App() {
       if (!sch) return;
 
       const schRegs = registrations.filter((r) => r.schoolId === sch.id);
-      const rankedLookup = buildRankedEntryLookup(registrations, scores, roundScores, absentRegs);
+      const rankedLookup = buildRankedEntryLookup(registrations, scores, roundScores, absentRegs, recusedJudges);
       let gold = 0;
       let silver = 0;
       let bronze = 0;
@@ -4281,7 +4380,7 @@ export default function App() {
       return;
     }
 
-    const rankedLookupAll = buildRankedEntryLookup(registrations, scores, roundScores, absentRegs);
+    const rankedLookupAll = buildRankedEntryLookup(registrations, scores, roundScores, absentRegs, recusedJudges);
     const standings = schools
       .map((sch) => {
         let gold = 0;
@@ -5295,6 +5394,180 @@ export default function App() {
       `${isDharmaQuiz ? 'ใบลงคะแนน (๑ ชุด)' : 'ใบลงคะแนนรายบุคคล'} - ${comp.name}`,
       sectionsHtml,
       useWideLandscapeSheet ? 'A4 landscape' : 'A4 portrait'
+    );
+    showToast(res.message, res.ok ? 'success' : 'error');
+  };
+
+  const handleDownloadCombinedJudgeScoreSheetPdf = (
+    targetCompId: string,
+    targetLevel: string = 'ทั้งหมด'
+  ) => {
+    const comp = COMPETITIONS.find((c) => c.id === targetCompId);
+    if (!comp) return;
+    const levelsToPrint =
+      targetLevel && targetLevel !== 'ทั้งหมด' && comp.levels.includes(targetLevel)
+        ? [targetLevel]
+        : comp.levels;
+    const isTwoRound = isTwoRoundCompetition(comp.id);
+
+    const buildCombinedLevelHtml = (lvl: string) => {
+      const levelJudges = judges.filter(
+        (j) => j.competitionId === comp.id && String(j.level || '').trim() === lvl.trim()
+      );
+      const levelRegs = registrations.filter(
+        (r) => r.competitionId === comp.id && String(r.level || '').trim() === lvl.trim()
+      );
+      const rankedList = buildCompetitionRankedList(
+        comp.id,
+        lvl,
+        registrations,
+        scores,
+        roundScores,
+        absentRegs,
+        recusedJudges
+      );
+      const rankByRegId: Record<string, (typeof rankedList)[number]> = {};
+      rankedList.forEach((e) => {
+        rankByRegId[e.reg.id] = e;
+      });
+      const sched = schedules[`${comp.id}__${lvl}`] || {
+        venue: EVENT_VENUE_TH,
+        timeRange: '08.30 น. เป็นต้นไป'
+      };
+
+      const judgeColsHtml =
+        levelJudges.length > 0
+          ? levelJudges
+              .map(
+                (j, idx) =>
+                  `<th style="padding: 6px 4px; border: 1px solid #94a3b8; min-width: 24mm; text-align: center; font-size: 10.5px;">กรรมการ ${idx + 1}<br/><span style="font-weight: 500; font-size: 9.5px;">${escapeHtml(j.name)}</span></th>`
+              )
+              .join('')
+          : `<th style="padding: 6px 4px; border: 1px solid #94a3b8; min-width: 28mm; text-align: center;">ยังไม่มีรายชื่อกรรมการ</th>`;
+
+      const rowsHtml = levelRegs
+        .map((reg, idx) => {
+          const sch = schools.find((s) => s.id === reg.schoolId);
+          const isAbsent = Boolean(absentRegs[reg.id]);
+          const rankedEntry = rankByRegId[reg.id];
+          const rInfo = rankedEntry?.roundInfo;
+          const studentList = reg.students.map((s) => escapeHtml(s.name)).join('<br/>');
+
+          const judgeCells =
+            levelJudges.length > 0
+              ? levelJudges
+                  .map((j) => {
+                    if (isAbsent) {
+                      return `<td style="padding: 6px 4px; border: 1px solid #94a3b8; text-align: center; color: #be123c; font-size: 10px;">ไม่เข้าร่วม</td>`;
+                    }
+                    if (recusedJudges[reg.id]?.[j.id]) {
+                      return `<td style="padding: 6px 4px; border: 1px solid #94a3b8; text-align: center; background: #fffbeb; color: #b45309; font-size: 9.5px; font-weight: 700;">งดเว้น<br/>(โรงเรียนตน)</td>`;
+                    }
+                    if (isTwoRound) {
+                      const rs = roundScores[reg.id] || {};
+                      const hasRoundStore = Boolean(roundScores[reg.id]);
+                      const qScore =
+                        rs.qualifying?.[j.id] ??
+                        (!hasRoundStore ? scores[reg.id]?.[j.id] : undefined);
+                      const fScore = rs.final?.[j.id];
+                      const parts: string[] = [];
+                      if (typeof qScore === 'number') parts.push(`ค:${qScore.toFixed(0)}`);
+                      if (typeof fScore === 'number') parts.push(`ต:${fScore.toFixed(0)}`);
+                      return `<td style="padding: 6px 4px; border: 1px solid #94a3b8; text-align: center; font-weight: 600; font-size: 10.5px;">${parts.length > 0 ? parts.join(' / ') : '-'}</td>`;
+                    }
+                    const sc = scores[reg.id]?.[j.id];
+                    return `<td style="padding: 6px 4px; border: 1px solid #94a3b8; text-align: center; font-weight: 600;">${typeof sc === 'number' ? sc.toFixed(2) : '-'}</td>`;
+                  })
+                  .join('')
+              : `<td style="padding: 6px 4px; border: 1px solid #94a3b8; text-align: center;">-</td>`;
+
+          const avgCell = isAbsent
+            ? '<span style="color: #be123c; font-size: 10px;">ไม่เข้าร่วม</span>'
+            : rankedEntry?.hasScore
+            ? `${rankedEntry.score.toFixed(2)}${isTwoRound && rInfo?.activeRoundLabel ? `<div style="font-size: 9px; color: #0369a1;">(${escapeHtml(rInfo.activeRoundLabel)})</div>` : ''}`
+            : '-';
+          const awardText = isAbsent
+            ? 'ไม่เข้าร่วม'
+            : rankedEntry?.hasScore && rankedEntry.rankNum
+            ? `${getRankAwardLabel(rankedEntry.rankNum) || `อันดับ ${rankedEntry.rankNum}`}`
+            : '-';
+
+          return `
+            <tr style="background: ${idx % 2 === 0 ? '#ffffff' : '#f8fafc'};">
+              <td style="padding: 6px 4px; border: 1px solid #94a3b8; text-align: center; font-weight: 700;">${idx + 1}</td>
+              <td style="padding: 6px 6px; border: 1px solid #94a3b8; font-weight: 600;">${escapeHtml(sch?.name || '-')}</td>
+              <td style="padding: 6px 6px; border: 1px solid #94a3b8; font-size: 11px;">${studentList || '-'}</td>
+              ${judgeCells}
+              <td style="padding: 6px 4px; border: 1px solid #94a3b8; text-align: center; font-weight: 800; color: #065f46;">${avgCell}</td>
+              <td style="padding: 6px 4px; border: 1px solid #94a3b8; text-align: center; font-size: 10.5px; font-weight: 700;">${escapeHtml(awardText)}</td>
+            </tr>
+          `;
+        })
+        .join('');
+
+      const signBlocks =
+        levelJudges.length > 0
+          ? levelJudges
+              .map(
+                (j) => `
+                <div style="text-align: center; width: 31%; margin-bottom: 10px;">
+                  <div>ลงชื่อ................................................</div>
+                  <div style="margin-top: 3px; font-weight: 700;">(${escapeHtml(j.name)})</div>
+                  <div style="font-size: 10.5px; color: #334155;">${escapeHtml(j.position || 'กรรมการตัดสิน')}</div>
+                </div>
+              `
+              )
+              .join('')
+          : `<div style="text-align: center; width: 45%;"><div>ลงชื่อ................................................ประธานกรรมการ</div><div style="margin-top: 4px;">(................................................)</div></div>`;
+
+      return `
+        <div class="page-break" style="width: 297mm; min-height: 210mm; background: white; padding: 16px 20px; border: 1px solid #e2e8f0; display: flex; flex-direction: column; justify-content: space-between;">
+          <div>
+            <div style="text-align: center; border-bottom: 2px solid #0f766e; padding-bottom: 8px; margin-bottom: 10px;">
+              <div style="font-size: 16px; font-weight: 700; color: #115e59;">ใบลงคะแนนรวมของคณะกรรมการตัดสินทั้งหมด</div>
+              <div style="font-size: 13px; font-weight: 700; margin-top: 2px;">${escapeHtml(EVENT_TITLE_TH)}</div>
+              <div style="font-size: 12px; color: #334155; margin-top: 2px;">
+                กิจกรรม: <strong>${escapeHtml(comp.name)}</strong> (${escapeHtml(comp.type)}) • ระดับ: <strong>${escapeHtml(lvl)}</strong>
+              </div>
+              <div style="font-size: 11px; color: #475569; margin-top: 2px;">
+                ${escapeHtml(EVENT_DATE_TH)} • สถานที่: ${escapeHtml(sched.venue)} • เวลา: ${escapeHtml(sched.timeRange)}
+              </div>
+            </div>
+
+            <table style="width: 100%; border-collapse: collapse; font-size: 11px;">
+              <thead>
+                <tr style="background: #ccfbf1; color: #134e4a;">
+                  <th style="padding: 6px 4px; border: 1px solid #94a3b8; width: 9mm;">ที่</th>
+                  <th style="padding: 6px 6px; border: 1px solid #94a3b8;">โรงเรียน</th>
+                  <th style="padding: 6px 6px; border: 1px solid #94a3b8;">ผู้เข้าแข่งขัน</th>
+                  ${judgeColsHtml}
+                  <th style="padding: 6px 4px; border: 1px solid #94a3b8; width: 22mm; text-align: center;">คะแนนเฉลี่ย<br/>(เต็ม ๑๐๐)</th>
+                  <th style="padding: 6px 4px; border: 1px solid #94a3b8; width: 28mm; text-align: center;">อันดับ / ผล</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${
+                  rowsHtml ||
+                  `<tr><td colspan="${Math.max(1, levelJudges.length) + 5}" style="padding: 18px; border: 1px solid #94a3b8; text-align: center; color: #64748b;">ยังไม่มีผู้สมัครในระดับชั้นนี้</td></tr>`
+                }
+              </tbody>
+            </table>
+          </div>
+
+          <div style="margin-top: 14px; border-top: 1px dashed #cbd5e1; padding-top: 10px;">
+            <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; font-size: 11.5px;">
+              ${signBlocks}
+            </div>
+          </div>
+        </div>
+      `;
+    };
+
+    const htmlSections = levelsToPrint.map((lvl) => buildCombinedLevelHtml(lvl)).join('');
+    const res = openPrintableDocument(
+      `ใบลงคะแนนรวมกรรมการทั้งหมด - ${comp.name}`,
+      htmlSections,
+      'A4 landscape'
     );
     showToast(res.message, res.ok ? 'success' : 'error');
   };
@@ -7657,7 +7930,7 @@ export default function App() {
     });
     const targetRegs = scopedRegs.filter((r) => !absentRegs[r.id]);
 
-    const certRankedLookup = buildRankedEntryLookup(registrations, scores, roundScores, absentRegs);
+    const certRankedLookup = buildRankedEntryLookup(registrations, scores, roundScores, absentRegs, recusedJudges);
     const certs: CertificateItem[] = [];
     const emittedDirectorSchools = new Set<string>();
     targetRegs.forEach((r) => {
@@ -8002,7 +8275,8 @@ export default function App() {
                     registrations,
                     scores,
                     roundScores,
-                    absentRegs
+                    absentRegs,
+                    recusedJudges
                   );
                   const myRankedEntry = sameLevelRanked.find((item) => item.reg.id === reg.id);
                   const myCalc = isAbsent
@@ -8116,7 +8390,7 @@ export default function App() {
       return 'participant';
     };
 
-    const medalRankedLookup = buildRankedEntryLookup(registrations, scores, roundScores, absentRegs);
+    const medalRankedLookup = buildRankedEntryLookup(registrations, scores, roundScores, absentRegs, recusedJudges);
     const schoolStandings = schools
       .map((sch) => {
         let gold = 0;
@@ -8183,7 +8457,7 @@ export default function App() {
       : -1;
     const focusStats = focusStandingIndex >= 0 ? schoolStandings[focusStandingIndex] : null;
 
-    const focusRankedLookup = buildRankedEntryLookup(registrations, scores, roundScores, absentRegs);
+    const focusRankedLookup = buildRankedEntryLookup(registrations, scores, roundScores, absentRegs, recusedJudges);
     const focusDetails = focusSchool
       ? registrations
           .filter((r) => r.schoolId === focusSchool.id)
@@ -8709,6 +8983,9 @@ export default function App() {
       comp: CompetitionItem;
       level: string;
       isApproved: boolean;
+      judgeCompleted: boolean;
+      judgeCompletedAt?: string;
+      judgeCompletedBy?: string;
       totalRegisteredTeams: number;
       scoredTeamsCount: number;
       rankedItems: RankedParticipantItem[];
@@ -8724,6 +9001,7 @@ export default function App() {
           evalMeta[metaKey] ||
           evalMeta[`${comp.id}__${lvl}`] || { status: 'pending', approved: false };
         const isApproved = Boolean(meta.approved);
+        const judgeCompleted = Boolean(meta.judgeCompleted);
 
         const rankedList = buildCompetitionRankedList(
           comp.id,
@@ -8731,7 +9009,8 @@ export default function App() {
           registrations,
           scores,
           roundScores,
-          absentRegs
+          absentRegs,
+          recusedJudges
         );
 
         const rankedItems: RankedParticipantItem[] = rankedList.map((entry) => {
@@ -8769,6 +9048,9 @@ export default function App() {
           comp,
           level: lvl,
           isApproved,
+          judgeCompleted,
+          judgeCompletedAt: meta.judgeCompletedAt,
+          judgeCompletedBy: meta.judgeCompletedBy,
           totalRegisteredTeams,
           scoredTeamsCount,
           rankedItems
@@ -8778,6 +9060,9 @@ export default function App() {
 
     const approvedCategoriesCount = allCategoryRows.filter((r) => r.isApproved).length;
     const pendingCategoriesCount = allCategoryRows.length - approvedCategoriesCount;
+    const judgeCompletedPendingApprovalRows = allCategoryRows.filter(
+      (r) => r.judgeCompleted && !r.isApproved
+    );
 
     const q = resultsSearch.trim().toLowerCase();
     const filteredRows = allCategoryRows.filter((row) => {
@@ -8936,6 +9221,41 @@ export default function App() {
             </div>
           </div>
         </div>
+
+        {/* Chairman Completed Notification Banner */}
+        {isAdminOrManager && judgeCompletedPendingApprovalRows.length > 0 && (
+          <div className="rounded-2xl bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200 p-4 sm:p-5 shadow-xs space-y-2.5">
+            <div className="flex items-center gap-2 text-sm font-bold text-emerald-900">
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+              <span>
+                แจ้งเตือน: ประธานกรรมการตัดสินแจ้งการตัดสินเสร็จสมบูรณ์ครบทุกโรงเรียนแล้ว ({judgeCompletedPendingApprovalRows.length} รายการ รอผู้ดูแลระบบอนุมัติผล)
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {judgeCompletedPendingApprovalRows.map((item) => (
+                <div
+                  key={item.metaKey}
+                  className="inline-flex items-center gap-2 rounded-xl bg-white border border-emerald-200 px-3 py-1.5 text-xs text-slate-700 shadow-2xs"
+                >
+                  <span className="font-bold text-emerald-800">{item.comp.name}</span>
+                  <span className="text-slate-500">({item.level})</span>
+                  {item.judgeCompletedBy && (
+                    <span className="text-[11px] text-slate-500">• โดย {item.judgeCompletedBy}</span>
+                  )}
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => toggleApprove(item.metaKey)}
+                      className="rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-0.5 text-[11px] font-bold cursor-pointer"
+                    >
+                      อนุมัติทันที
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Data Table Container */}
         <div className="rounded-2xl bg-white border border-slate-100 shadow-sm">
@@ -9162,6 +9482,14 @@ export default function App() {
                             <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
                               <CheckCircle2 className="w-3.5 h-3.5" />
                               <span>อนุมัติประกาศผลแล้ว</span>
+                            </span>
+                          ) : row.judgeCompleted ? (
+                            <span
+                              className="inline-flex items-center gap-1.5 text-xs font-bold text-teal-800 bg-teal-50 px-3 py-1 rounded-full border border-teal-200"
+                              title={row.judgeCompletedBy ? `แจ้งโดย ${row.judgeCompletedBy}` : undefined}
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
+                              <span>ประธานกรรมการแจ้งเสร็จสมบูรณ์ — รออนุมัติ</span>
                             </span>
                           ) : (
                             <span className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-700 bg-amber-50 px-3 py-1 rounded-full border border-amber-200">
@@ -9594,6 +9922,1026 @@ export default function App() {
     );
   };
 
+  const renderCompetitionCheckinPage = () => {
+    if (
+      authSession.role !== 'admin' &&
+      authSession.role !== 'manager' &&
+      authSession.role !== 'registrar'
+    ) {
+      return (
+        <div className="rounded-2xl bg-white p-8 text-center border border-slate-100 space-y-3">
+          <ShieldCheck className="w-8 h-8 text-rose-500 mx-auto" />
+          <div className="font-bold text-slate-800">
+            เมนูนี้สำหรับผู้ดูแลระบบ ผู้จัดการแข่งขัน หรือเจ้าหน้าที่ลงทะเบียนเท่านั้น
+          </div>
+        </div>
+      );
+    }
+
+    const selectedComp = COMPETITIONS.find((c) => c.id === adminCompManageId) || COMPETITIONS[0];
+    const compRegistrations = registrations.filter(
+      (r) =>
+        r.competitionId === selectedComp.id &&
+        (adminCompManageLevel === 'ทั้งหมด' ? true : r.level === adminCompManageLevel)
+    );
+
+    const resetCompManageRegForm = (
+      compId: string = selectedComp.id,
+      lvl: string = adminCompManageLevel
+    ) => {
+      const targetComp = COMPETITIONS.find((c) => c.id === compId) || COMPETITIONS[0];
+      const resolvedLevel =
+        lvl !== 'ทั้งหมด' && targetComp.levels.includes(lvl) ? lvl : targetComp.levels[0];
+      setCompManageRegForm({
+        editingId: null,
+        schoolId: schools[0]?.id || '',
+        level: resolvedLevel,
+        studentNames: Array.from({ length: Math.max(1, targetComp.teamSize) }, () => ''),
+        studentPhotos: Array.from({ length: Math.max(1, targetComp.teamSize) }, () => ''),
+        coachNames: [''],
+        coachPhotos: [''],
+        qualifyingSong: '',
+        finalSong: ''
+      });
+    };
+
+    const startEditCompManageReg = (reg: RegistrationItem) => {
+      const targetSize = Math.max(selectedComp.teamSize, reg.students.length, 1);
+      const normalizedStudents = Array.from({ length: targetSize }, (_, idx) => ({
+        name: reg.students[idx]?.name || '',
+        photoUrl: reg.students[idx]?.photoUrl || ''
+      }));
+      const normalizedCoaches =
+        reg.coaches.length > 0
+          ? reg.coaches.map((c) =>
+              typeof c === 'string'
+                ? { name: c, photoUrl: '' }
+                : { name: c.name || '', photoUrl: c.photoUrl || '' }
+            )
+          : [{ name: '', photoUrl: '' }];
+      setCompManageRegForm({
+        editingId: reg.id,
+        schoolId: reg.schoolId || schools[0]?.id || '',
+        level: selectedComp.levels.includes(reg.level) ? reg.level : selectedComp.levels[0],
+        studentNames: normalizedStudents.map((s) => s.name),
+        studentPhotos: normalizedStudents.map((s) => s.photoUrl),
+        coachNames: normalizedCoaches.map((c) => c.name),
+        coachPhotos: normalizedCoaches.map((c) => c.photoUrl),
+        qualifyingSong: reg.qualifyingSong || '',
+        finalSong: reg.finalSong || ''
+      });
+    };
+
+    const handleCompManagePhotoUpload = async (
+      kind: 'student' | 'coach',
+      idx: number,
+      file?: File
+    ) => {
+      if (!file) return;
+      const uploadedUrl = await uploadImageToServer(
+        file,
+        kind === 'coach' ? 'coaches' : 'students',
+        600,
+        0.85
+      );
+      if (!uploadedUrl) return;
+      setCompManageRegForm((prev) => {
+        if (kind === 'student') {
+          const nextPhotos = [...prev.studentPhotos];
+          nextPhotos[idx] = uploadedUrl;
+          return { ...prev, studentPhotos: nextPhotos };
+        }
+        const nextPhotos = [...prev.coachPhotos];
+        nextPhotos[idx] = uploadedUrl;
+        return { ...prev, coachPhotos: nextPhotos };
+      });
+    };
+
+    const handleCompManageRegSubmit = async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!compManageRegForm.schoolId) {
+        showToast('กรุณาเลือกโรงเรียนที่เข้าแข่งขัน', 'error');
+        return;
+      }
+      const cleanedStudents = compManageRegForm.studentNames
+        .map((name, i) => ({
+          name: name.trim(),
+          photoUrl: compManageRegForm.studentPhotos[i] || ''
+        }))
+        .filter((s) => s.name.length > 0);
+      if (cleanedStudents.length === 0) {
+        showToast('กรุณาระบุชื่อผู้เข้าแข่งขันอย่างน้อย 1 คน', 'error');
+        return;
+      }
+      const cleanedCoaches = compManageRegForm.coachNames
+        .map((c, i) => ({
+          name: c.trim(),
+          photoUrl: compManageRegForm.coachPhotos[i] || ''
+        }))
+        .filter((c) => c.name.length > 0);
+
+      if (
+        selectedComp.requiresSongs &&
+        (!compManageRegForm.qualifyingSong.trim() || !compManageRegForm.finalSong.trim())
+      ) {
+        showToast('รายการร้องเพลงไทยลูกทุ่งต้องระบุเพลงรอบคัดเลือกและรอบตัดสินให้ครบถ้วน', 'error');
+        return;
+      }
+
+      const resolvedLevel = selectedComp.levels.includes(compManageRegForm.level)
+        ? compManageRegForm.level
+        : selectedComp.levels[0];
+
+      try {
+        const res = await appApiCall('/registrations/save', {
+          id: compManageRegForm.editingId || undefined,
+          schoolId: compManageRegForm.schoolId,
+          competitionId: selectedComp.id,
+          level: resolvedLevel,
+          students: cleanedStudents,
+          coaches:
+            cleanedCoaches.length > 0
+              ? cleanedCoaches
+              : [{ name: 'ครูผู้ฝึกสอน', photoUrl: '' }],
+          qualifyingSong: selectedComp.requiresSongs ? compManageRegForm.qualifyingSong.trim() : '',
+          finalSong: selectedComp.requiresSongs ? compManageRegForm.finalSong.trim() : ''
+        });
+        showToast(res.message || 'บันทึกการลงทะเบียนเข้าร่วมแข่งขันเรียบร้อยแล้ว');
+        resetCompManageRegForm(selectedComp.id, adminCompManageLevel);
+      } catch (err) {
+        showToast(
+          err instanceof Error ? err.message : 'ไม่สามารถบันทึกข้อมูลการลงทะเบียนได้',
+          'error'
+        );
+      }
+    };
+
+    const handleCompCheckinStatus = async (
+      regItem: RegistrationItem,
+      nextStatus: 'checked_in' | 'pending' | 'absent'
+    ) => {
+      try {
+        const res = await appApiCall('/competition/checkin', {
+          registrationId: regItem.id,
+          status: nextStatus
+        });
+        showToast(res.message || 'บันทึกสถานะรายงานตัวเข้าร่วมแข่งขันเรียบร้อยแล้ว');
+      } catch (err) {
+        showToast(
+          err instanceof Error ? err.message : 'ไม่สามารถบันทึกสถานะรายงานตัวได้',
+          'error'
+        );
+      }
+    };
+
+    const handleSchoolBatchCheckinStatus = async (
+      schoolId: string,
+      nextStatus: 'checked_in' | 'pending' | 'absent'
+    ) => {
+      try {
+        const res = await appApiCall('/competition/checkin', {
+          schoolId,
+          competitionId: selectedComp.id,
+          level: adminCompManageLevel,
+          status: nextStatus
+        });
+        showToast(res.message || 'อัปเดตสถานะการลงทะเบียนแบบโรงเรียนเรียบร้อยแล้ว');
+      } catch (err) {
+        showToast(
+          err instanceof Error ? err.message : 'ไม่สามารถอัปเดตสถานะแบบโรงเรียนได้',
+          'error'
+        );
+      }
+    };
+
+    const handleMarkAllPendingAbsent = async () => {
+      try {
+        const res = await appApiCall('/competition/checkin', {
+          competitionId: selectedComp.id,
+          level: adminCompManageLevel,
+          pendingOnly: true,
+          status: 'absent'
+        });
+        showToast(
+          res.message || 'แจ้งสถานะไม่เข้าร่วมแข่งขันสำหรับทีมที่ยังไม่ลงทะเบียนเรียบร้อยแล้ว'
+        );
+      } catch (err) {
+        showToast(
+          err instanceof Error ? err.message : 'ไม่สามารถแจ้งไม่เข้าร่วมทีมที่ยังไม่ลงทะเบียนได้',
+          'error'
+        );
+      }
+    };
+
+    const checkedInCount = compRegistrations.filter(
+      (r) => !absentRegs[r.id] && Boolean(checkIns[r.id]?.checkedIn)
+    ).length;
+    const absentCompCount = compRegistrations.filter((r) => Boolean(absentRegs[r.id])).length;
+    const pendingCheckinCount = Math.max(
+      0,
+      compRegistrations.length - checkedInCount - absentCompCount
+    );
+
+    const checkinSearchQ = compManageCheckinSearch.trim().toLowerCase();
+    const filteredCheckinRegs = compRegistrations.filter((r) => {
+      const isAbsent = Boolean(absentRegs[r.id]);
+      const isCheckedIn = !isAbsent && Boolean(checkIns[r.id]?.checkedIn);
+      const resolvedStatus: 'checked_in' | 'pending' | 'absent' = isAbsent
+        ? 'absent'
+        : isCheckedIn
+        ? 'checked_in'
+        : 'pending';
+      if (compManageCheckinFilter !== 'all' && resolvedStatus !== compManageCheckinFilter) {
+        return false;
+      }
+      if (!checkinSearchQ) return true;
+      const sch = schools.find((s) => s.id === r.schoolId);
+      const text = [
+        sch?.name || '',
+        r.level,
+        r.students.map((st) => st.name).join(' '),
+        r.coaches.map((c) => (typeof c === 'string' ? c : c.name)).join(' ')
+      ]
+        .join(' ')
+        .toLowerCase();
+      return text.includes(checkinSearchQ);
+    });
+
+    const groupedBySchool = schools
+      .map((sch) => {
+        const schRegs = compRegistrations.filter((r) => r.schoolId === sch.id);
+        return { school: sch, regs: schRegs };
+      })
+      .filter(({ school, regs }) => {
+        if (regs.length === 0) return false;
+        if (compManageCheckinFilter !== 'all') {
+          const matchesFilter = regs.some((r) => {
+            const isAb = Boolean(absentRegs[r.id]);
+            const isChk = !isAb && Boolean(checkIns[r.id]?.checkedIn);
+            const st = isAb ? 'absent' : isChk ? 'checked_in' : 'pending';
+            return st === compManageCheckinFilter;
+          });
+          if (!matchesFilter) return false;
+        }
+        if (!checkinSearchQ) return true;
+        const text = [
+          school.name,
+          school.schoolCode,
+          ...regs.map((r) => `${r.level} ${r.students.map((s) => s.name).join(' ')}`)
+        ]
+          .join(' ')
+          .toLowerCase();
+        return text.includes(checkinSearchQ);
+      });
+
+    return (
+      <div className="space-y-6">
+        <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 space-y-4">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                <ClipboardCheck className="w-6 h-6 text-indigo-600" />
+                <span>ลงทะเบียนเข้าร่วมแข่งขัน</span>
+              </h2>
+              <p className="text-sm text-slate-500 mt-1">
+                บันทึกการรายงานตัวเข้าร่วมแข่งขันแบบรายทีมหรือรายโรงเรียน ยกเลิกการลงทะเบียน และแจ้งไม่เข้าร่วมแข่งขัน (เชื่อมโยงกับหน้าลงคะแนนกรรมการ)
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={pendingCheckinCount === 0}
+              onClick={handleMarkAllPendingAbsent}
+              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs sm:text-sm font-bold shadow-sm transition ${
+                pendingCheckinCount === 0
+                  ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+                  : 'bg-rose-600 hover:bg-rose-700 text-white cursor-pointer'
+              }`}
+            >
+              <UserX className="w-4 h-4" />
+              <span>แจ้งไม่เข้าร่วมทีมที่ยังไม่ลงทะเบียนทั้งหมด ({pendingCheckinCount})</span>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 border-t border-slate-100">
+            <div>
+              <label className="block text-xs font-bold text-slate-600 mb-1">เลือกกิจกรรมการแข่งขัน</label>
+              <select
+                value={selectedComp.id}
+                onChange={(e) => {
+                  const nextCompId = e.target.value;
+                  setAdminCompManageId(nextCompId);
+                  setAdminCompManageLevel('ทั้งหมด');
+                  resetCompManageRegForm(nextCompId, 'ทั้งหมด');
+                }}
+                className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm bg-slate-50 outline-none focus:border-indigo-500"
+              >
+                {COMPETITIONS.map((c, idx) => (
+                  <option key={c.id} value={c.id}>
+                    {idx + 1}. {c.name} ({c.type})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-600 mb-1">เลือกระดับชั้น</label>
+              <select
+                value={adminCompManageLevel}
+                onChange={(e) => {
+                  const nextLvl = e.target.value;
+                  setAdminCompManageLevel(nextLvl);
+                  if (!compManageRegForm.editingId && nextLvl !== 'ทั้งหมด') {
+                    setCompManageRegForm((prev) => ({ ...prev, level: nextLvl }));
+                  }
+                }}
+                className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm bg-slate-50 outline-none focus:border-indigo-500"
+              >
+                <option value="ทั้งหมด">ทุกระดับชั้น ({selectedComp.levels.length} ระดับ)</option>
+                {selectedComp.levels.map((lvl) => (
+                  <option key={lvl} value={lvl}>
+                    {lvl}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="rounded-2xl bg-white p-4 border border-slate-100 shadow-sm">
+            <div className="text-xs font-semibold text-slate-500">ลงทะเบียนทั้งหมด</div>
+            <div className="text-2xl font-extrabold text-slate-800 mt-1">{compRegistrations.length} ทีม</div>
+          </div>
+          <div className="rounded-2xl bg-emerald-50/80 p-4 border border-emerald-200 shadow-sm">
+            <div className="text-xs font-semibold text-emerald-700">ลงทะเบียนเข้าร่วมแล้ว</div>
+            <div className="text-2xl font-extrabold text-emerald-800 mt-1">{checkedInCount} ทีม</div>
+          </div>
+          <div className="rounded-2xl bg-amber-50/80 p-4 border border-amber-200 shadow-sm">
+            <div className="text-xs font-semibold text-amber-700">รอลงทะเบียนเข้าร่วม</div>
+            <div className="text-2xl font-extrabold text-amber-800 mt-1">{pendingCheckinCount} ทีม</div>
+          </div>
+          <div className="rounded-2xl bg-rose-50/80 p-4 border border-rose-200 shadow-sm">
+            <div className="text-xs font-semibold text-rose-700">ไม่เข้าร่วมแข่งขัน</div>
+            <div className="text-2xl font-extrabold text-rose-800 mt-1">{absentCompCount} ทีม</div>
+          </div>
+        </div>
+
+        <form
+          onSubmit={handleCompManageRegSubmit}
+          className="rounded-2xl bg-white p-6 shadow-sm border border-indigo-100 space-y-5"
+        >
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+            <div>
+              <h3 className="text-base sm:text-lg font-bold text-slate-800 flex items-center gap-2">
+                <UserPlus className="w-5 h-5 text-indigo-600" />
+                <span>
+                  {compManageRegForm.editingId
+                    ? `แก้ไขข้อมูลทีมเข้าแข่งขัน — ${selectedComp.name}`
+                    : `เพิ่ม / ลงทะเบียนทีมเข้าแข่งขัน — ${selectedComp.name}`}
+                </span>
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                ผู้ดูแลระบบ ผู้จัดการแข่งขัน และเจ้าหน้าที่ลงทะเบียนสามารถเพิ่ม แก้ไข หรือยกเลิกการลงทะเบียนทีมเข้าแข่งขันได้ตลอดเวลา
+              </p>
+            </div>
+            {compManageRegForm.editingId && (
+              <button
+                type="button"
+                onClick={() => resetCompManageRegForm(selectedComp.id, adminCompManageLevel)}
+                className="self-start rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 px-3 py-1.5 text-xs font-bold cursor-pointer"
+              >
+                ยกเลิกการแก้ไข
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-600 mb-1">โรงเรียน / สถานศึกษา *</label>
+              <select
+                value={compManageRegForm.schoolId}
+                onChange={(e) => setCompManageRegForm((p) => ({ ...p, schoolId: e.target.value }))}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm outline-none focus:border-indigo-500"
+              >
+                {schools.map((sch) => (
+                  <option key={sch.id} value={sch.id}>
+                    {sch.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-600 mb-1">ระดับชั้น *</label>
+              <select
+                value={compManageRegForm.level}
+                onChange={(e) => setCompManageRegForm((p) => ({ ...p, level: e.target.value }))}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm outline-none focus:border-indigo-500"
+              >
+                {selectedComp.levels.map((lvl) => (
+                  <option key={lvl} value={lvl}>
+                    {lvl}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="space-y-2.5">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold text-slate-700">
+                รายชื่อนักเรียนผู้เข้าแข่งขัน ({compManageRegForm.studentNames.length} คน)
+              </label>
+              <button
+                type="button"
+                onClick={() =>
+                  setCompManageRegForm((p) => ({
+                    ...p,
+                    studentNames: [...p.studentNames, ''],
+                    studentPhotos: [...p.studentPhotos, '']
+                  }))
+                }
+                className="inline-flex items-center gap-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-2.5 py-1 text-xs font-bold cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>เพิ่มนักเรียน</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {compManageRegForm.studentNames.map((stName, idx) => (
+                <div key={idx} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 flex items-center gap-3">
+                  {compManageRegForm.studentPhotos[idx] ? (
+                    <img
+                      src={compManageRegForm.studentPhotos[idx]}
+                      alt="นักเรียน"
+                      className="w-11 h-11 rounded-xl object-cover border border-slate-200 shrink-0"
+                    />
+                  ) : (
+                    <div className="w-11 h-11 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-400 shrink-0">
+                      <ImageIcon className="w-5 h-5" />
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0 space-y-1.5">
+                    <input
+                      type="text"
+                      value={stName}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setCompManageRegForm((p) => {
+                          const next = [...p.studentNames];
+                          next[idx] = val;
+                          return { ...p, studentNames: next };
+                        });
+                      }}
+                      placeholder={`ชื่อ-นามสกุล นักเรียนคนที่ ${idx + 1}`}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm outline-none focus:border-indigo-500"
+                    />
+                    <div className="flex items-center gap-2">
+                      <label className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-700 hover:text-indigo-800 cursor-pointer">
+                        <Upload className="w-3 h-3" />
+                        <span>{compManageRegForm.studentPhotos[idx] ? 'เปลี่ยนรูป' : 'อัปโหลดรูป'}</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => handleCompManagePhotoUpload('student', idx, e.target.files?.[0])}
+                        />
+                      </label>
+                      {compManageRegForm.studentNames.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCompManageRegForm((p) => ({
+                              ...p,
+                              studentNames: p.studentNames.filter((_, i) => i !== idx),
+                              studentPhotos: p.studentPhotos.filter((_, i) => i !== idx)
+                            }))
+                          }
+                          className="text-[11px] font-bold text-rose-600 hover:underline cursor-pointer"
+                        >
+                          ลบช่องนี้
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-2.5">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold text-slate-700">
+                รายชื่อครูผู้ฝึกสอน ({compManageRegForm.coachNames.length} ท่าน)
+              </label>
+              <button
+                type="button"
+                onClick={() =>
+                  setCompManageRegForm((p) => ({
+                    ...p,
+                    coachNames: [...p.coachNames, ''],
+                    coachPhotos: [...p.coachPhotos, '']
+                  }))
+                }
+                className="inline-flex items-center gap-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 px-2.5 py-1 text-xs font-bold cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>เพิ่มครูผู้ฝึกสอน</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {compManageRegForm.coachNames.map((cName, idx) => (
+                <div key={idx} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 flex items-center gap-3">
+                  {compManageRegForm.coachPhotos[idx] ? (
+                    <img
+                      src={compManageRegForm.coachPhotos[idx]}
+                      alt="ครูผู้ฝึกสอน"
+                      className="w-11 h-11 rounded-xl object-cover border border-slate-200 shrink-0"
+                    />
+                  ) : (
+                    <div className="w-11 h-11 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-400 shrink-0">
+                      <ImageIcon className="w-5 h-5" />
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0 space-y-1.5">
+                    <input
+                      type="text"
+                      value={cName}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setCompManageRegForm((p) => {
+                          const next = [...p.coachNames];
+                          next[idx] = val;
+                          return { ...p, coachNames: next };
+                        });
+                      }}
+                      placeholder={`ชื่อ-นามสกุล ครูผู้ฝึกสอนท่านที่ ${idx + 1}`}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm outline-none focus:border-indigo-500"
+                    />
+                    <div className="flex items-center gap-2">
+                      <label className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 hover:text-emerald-800 cursor-pointer">
+                        <Upload className="w-3 h-3" />
+                        <span>{compManageRegForm.coachPhotos[idx] ? 'เปลี่ยนรูป' : 'อัปโหลดรูป'}</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => handleCompManagePhotoUpload('coach', idx, e.target.files?.[0])}
+                        />
+                      </label>
+                      {compManageRegForm.coachNames.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCompManageRegForm((p) => ({
+                              ...p,
+                              coachNames: p.coachNames.filter((_, i) => i !== idx),
+                              coachPhotos: p.coachPhotos.filter((_, i) => i !== idx)
+                            }))
+                          }
+                          className="text-[11px] font-bold text-rose-600 hover:underline cursor-pointer"
+                        >
+                          ลบช่องนี้
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {selectedComp.requiresSongs && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 rounded-xl bg-amber-50/70 border border-amber-200 p-4">
+              <div>
+                <label className="block text-xs font-bold text-amber-900 mb-1">ชื่อเพลงรอบคัดเลือก *</label>
+                <input
+                  type="text"
+                  value={compManageRegForm.qualifyingSong}
+                  onChange={(e) => setCompManageRegForm((p) => ({ ...p, qualifyingSong: e.target.value }))}
+                  placeholder="ระบุชื่อเพลงที่ใช้ประกวดรอบคัดเลือก"
+                  className="w-full rounded-xl border border-amber-200 bg-white px-3.5 py-2 text-sm outline-none focus:border-amber-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-amber-900 mb-1">ชื่อเพลงรอบตัดสิน *</label>
+                <input
+                  type="text"
+                  value={compManageRegForm.finalSong}
+                  onChange={(e) => setCompManageRegForm((p) => ({ ...p, finalSong: e.target.value }))}
+                  placeholder="ระบุชื่อเพลงที่ใช้ประกวดรอบตัดสิน"
+                  className="w-full rounded-xl border border-amber-200 bg-white px-3.5 py-2 text-sm outline-none focus:border-amber-500"
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="flex flex-wrap justify-end gap-2">
+            <button
+              type="submit"
+              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-sky-600 hover:opacity-95 text-white font-bold px-5 py-2.5 text-sm shadow-sm cursor-pointer"
+            >
+              <Check className="w-4 h-4" />
+              <span>{compManageRegForm.editingId ? 'บันทึกการแก้ไขทีมเข้าแข่งขัน' : 'บันทึกการลงทะเบียนเข้าร่วมแข่งขัน'}</span>
+            </button>
+          </div>
+        </form>
+
+        {/* Check-in & Registered Teams / Schools Panel */}
+        <div className="rounded-2xl bg-white p-5 shadow-sm border border-slate-100 space-y-4">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                <UserCheck className="w-5 h-5 text-emerald-600" />
+                <span>การลงทะเบียนเข้าร่วมแข่งขันและยกเลิกการลงทะเบียน</span>
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                เลือกจัดการลงทะเบียนเข้าร่วม ยกเลิกการลงทะเบียน หรือแจ้งไม่เข้าร่วมได้ทั้งแบบรายทีมและแบบรายโรงเรียน
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex rounded-xl bg-slate-100 p-1">
+                <button
+                  type="button"
+                  onClick={() => setCompManageRegMode('team')}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                    compManageRegMode === 'team'
+                      ? 'bg-white text-indigo-700 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Users className="w-3.5 h-3.5" />
+                  <span>แบบรายทีม</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCompManageRegMode('school')}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                    compManageRegMode === 'school'
+                      ? 'bg-white text-emerald-700 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <School className="w-3.5 h-3.5" />
+                  <span>แบบรายโรงเรียน</span>
+                </button>
+              </div>
+
+              <div className="relative">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={compManageCheckinSearch}
+                  onChange={(e) => setCompManageCheckinSearch(e.target.value)}
+                  placeholder="ค้นหาโรงเรียน / นักเรียน..."
+                  className="rounded-xl border border-slate-200 pl-9 pr-3 py-2 text-xs sm:text-sm bg-slate-50 focus:bg-white outline-none"
+                />
+              </div>
+              <select
+                value={compManageCheckinFilter}
+                onChange={(e) => setCompManageCheckinFilter(e.target.value as 'all' | 'checked_in' | 'pending' | 'absent')}
+                className="rounded-xl border border-slate-200 px-3 py-2 text-xs sm:text-sm bg-slate-50 outline-none"
+              >
+                <option value="all">ทั้งหมด ({compRegistrations.length})</option>
+                <option value="checked_in">ลงทะเบียนแล้ว ({checkedInCount})</option>
+                <option value="pending">รอลงทะเบียน ({pendingCheckinCount})</option>
+                <option value="absent">ไม่เข้าร่วมแข่งขัน ({absentCompCount})</option>
+              </select>
+            </div>
+          </div>
+
+          {compManageRegMode === 'school' ? (
+            groupedBySchool.length === 0 ? (
+              <div className="text-center py-8 text-sm text-slate-400">
+                ไม่พบข้อมูลโรงเรียนที่มีทีมสมัครในเงื่อนไขที่เลือก
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {groupedBySchool.map(({ school, regs }) => {
+                  const schCheckedIn = regs.filter((r) => !absentRegs[r.id] && Boolean(checkIns[r.id]?.checkedIn)).length;
+                  const schAbsent = regs.filter((r) => Boolean(absentRegs[r.id])).length;
+                  const schPending = Math.max(0, regs.length - schCheckedIn - schAbsent);
+                  const anyLevelApproved = regs.some((r) => Boolean(evalMeta[`${r.competitionId}__${r.level}`]?.approved));
+                  return (
+                    <div key={school.id} className="rounded-2xl border border-slate-200 bg-slate-50/60 overflow-hidden">
+                      <div className="px-4 py-3.5 bg-white border-b border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-bold text-slate-800 text-sm sm:text-base">{school.name}</span>
+                            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                              รหัส {school.schoolCode}
+                            </span>
+                            <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
+                              ทั้งหมด {regs.length} ทีม (เข้าร่วมแล้ว {schCheckedIn} • รอ {schPending}{schAbsent > 0 ? ` • ไม่ร่วม ${schAbsent}` : ''})
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleSchoolBatchCheckinStatus(school.id, 'checked_in')}
+                            className="inline-flex items-center gap-1 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 text-xs font-bold cursor-pointer shadow-xs"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>ลงทะเบียนทั้งโรงเรียน</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleSchoolBatchCheckinStatus(school.id, 'pending')}
+                            className="inline-flex items-center gap-1 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 px-3 py-1.5 text-xs font-bold cursor-pointer"
+                          >
+                            <XCircle className="w-3.5 h-3.5" />
+                            <span>ยกเลิกการลงทะเบียนทั้งโรงเรียน</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={anyLevelApproved}
+                            onClick={() => handleSchoolBatchCheckinStatus(school.id, 'absent')}
+                            className={`inline-flex items-center gap-1 rounded-xl px-3 py-1.5 text-xs font-bold border ${
+                              anyLevelApproved
+                                ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                                : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200 cursor-pointer'
+                            }`}
+                          >
+                            <UserX className="w-3.5 h-3.5" />
+                            <span>ไม่เข้าร่วมทั้งโรงเรียน</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="p-3 space-y-2">
+                        {regs.map((reg) => {
+                          const metaApproved = Boolean(evalMeta[`${reg.competitionId}__${reg.level}`]?.approved);
+                          const isAbsent = Boolean(absentRegs[reg.id]);
+                          const isCheckedIn = !isAbsent && Boolean(checkIns[reg.id]?.checkedIn);
+                          return (
+                            <div key={reg.id} className="rounded-xl bg-white border border-slate-200/80 px-3.5 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                              <div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="font-bold text-indigo-700">{reg.level}</span>
+                                  {isAbsent ? (
+                                    <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 font-bold text-[11px]">ไม่เข้าร่วมแข่งขัน</span>
+                                  ) : isCheckedIn ? (
+                                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[11px]">ลงทะเบียนแล้ว</span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold text-[11px]">รอลงทะเบียน</span>
+                                  )}
+                                </div>
+                                <div className="font-semibold text-slate-800 mt-0.5">
+                                  {reg.students.map((st) => st.name).join(', ') || '-'}
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                {!isCheckedIn ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCompCheckinStatus(reg, 'checked_in')}
+                                    className="px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 font-bold cursor-pointer"
+                                  >
+                                    ลงทะเบียนเข้าร่วม
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCompCheckinStatus(reg, 'pending')}
+                                    className="px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-bold cursor-pointer"
+                                  >
+                                    ยกเลิกการลงทะเบียน
+                                  </button>
+                                )}
+                                {!isAbsent ? (
+                                  <button
+                                    type="button"
+                                    disabled={metaApproved}
+                                    onClick={() => handleCompCheckinStatus(reg, 'absent')}
+                                    className={`px-2.5 py-1 rounded-lg font-bold border ${
+                                      metaApproved
+                                        ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                                        : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200 cursor-pointer'
+                                    }`}
+                                  >
+                                    ไม่เข้าร่วม
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCompCheckinStatus(reg, 'pending')}
+                                    className="px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-bold cursor-pointer"
+                                  >
+                                    ยกเลิกไม่เข้าร่วม
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => startEditCompManageReg(reg)}
+                                  className="p-1.5 rounded-lg bg-sky-50 text-sky-700 hover:bg-sky-100 cursor-pointer"
+                                  aria-label="แก้ไขทีม"
+                                >
+                                  <Edit3 className="w-3.5 h-3.5" />
+                                </button>
+                                {confirmDeleteRegId === reg.id ? (
+                                  <span className="inline-flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteRegistration(reg.id)}
+                                      className="px-2 py-1 rounded-lg bg-rose-600 text-white font-bold cursor-pointer"
+                                    >
+                                      ยืนยันถอนทีม
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteRegId(null)}
+                                      className="px-2 py-1 rounded-lg bg-slate-100 text-slate-600 font-bold cursor-pointer"
+                                    >
+                                      กลับ
+                                    </button>
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    disabled={metaApproved}
+                                    onClick={() => setConfirmDeleteRegId(reg.id)}
+                                    className={`px-2 py-1 rounded-lg font-bold border ${
+                                      metaApproved
+                                        ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                                        : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200 cursor-pointer'
+                                    }`}
+                                  >
+                                    ถอนทีม
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )
+          ) : filteredCheckinRegs.length === 0 ? (
+            <div className="text-center py-8 text-sm text-slate-400">
+              ไม่พบรายการลงทะเบียนเข้าร่วมแข่งขันในเงื่อนไขที่เลือก
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs sm:text-sm">
+                <thead>
+                  <tr className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                    <th className="py-2.5 px-3 w-12 text-center">ลำดับ</th>
+                    <th className="py-2.5 px-3">โรงเรียน / ระดับชั้น</th>
+                    <th className="py-2.5 px-3">ผู้เข้าแข่งขัน & ครูผู้ฝึกสอน</th>
+                    <th className="py-2.5 px-3">สถานะการลงทะเบียน</th>
+                    <th className="py-2.5 px-3">ลงทะเบียน / ยกเลิกการลงทะเบียน</th>
+                    <th className="py-2.5 px-3 text-right">จัดการทีม</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredCheckinRegs.map((reg, idx) => {
+                    const sch = schools.find((s) => s.id === reg.schoolId);
+                    const metaApproved = Boolean(evalMeta[`${reg.competitionId}__${reg.level}`]?.approved);
+                    const isAbsent = Boolean(absentRegs[reg.id]);
+                    const isCheckedIn = !isAbsent && Boolean(checkIns[reg.id]?.checkedIn);
+                    const checkedRecord = checkIns[reg.id];
+
+                    return (
+                      <tr key={reg.id} className={isAbsent ? 'bg-rose-50/30' : 'hover:bg-slate-50/60'}>
+                        <td className="py-3 px-3 text-center font-bold text-slate-700">{idx + 1}</td>
+                        <td className="py-3 px-3">
+                          <div className="font-bold text-slate-800">{sch?.name || '-'}</div>
+                          <div className="text-[11px] font-semibold text-indigo-700 mt-0.5">{reg.level}</div>
+                        </td>
+                        <td className="py-3 px-3">
+                          <div className="font-medium text-slate-800">
+                            {reg.students.map((st) => st.name).join(', ') || '-'}
+                          </div>
+                          <div className="text-[11px] text-slate-500 mt-0.5">
+                            ครู: {reg.coaches.map((c) => (typeof c === 'string' ? c : c.name)).join(', ') || '-'}
+                          </div>
+                          {selectedComp.requiresSongs && (
+                            <div className="text-[11px] text-amber-700 mt-0.5">
+                              คัดเลือก: {reg.qualifyingSong || '-'} • ตัดสิน: {reg.finalSong || '-'}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 px-3">
+                          {isAbsent ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 text-rose-800 border border-rose-200 px-2.5 py-0.5 text-[11px] font-bold">
+                              <UserX className="w-3 h-3" />
+                              <span>ไม่เข้าร่วมแข่งขัน</span>
+                            </span>
+                          ) : isCheckedIn ? (
+                            <div>
+                              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 px-2.5 py-0.5 text-[11px] font-bold">
+                                <CheckCircle2 className="w-3 h-3" />
+                                <span>ลงทะเบียนแล้ว</span>
+                              </span>
+                              {checkedRecord?.updatedBy && (
+                                <div className="text-[10px] text-slate-500 mt-0.5">โดย {checkedRecord.updatedBy}</div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-800 border border-amber-200 px-2.5 py-0.5 text-[11px] font-bold">
+                              <Clock className="w-3 h-3" />
+                              <span>รอลงทะเบียน</span>
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-3">
+                          <div className="flex flex-wrap gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleCompCheckinStatus(reg, 'checked_in')}
+                              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border cursor-pointer ${
+                                isCheckedIn
+                                  ? 'bg-emerald-600 text-white border-emerald-600'
+                                  : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200'
+                              }`}
+                            >
+                              ลงทะเบียนเข้าร่วม
+                            </button>
+                            {(isCheckedIn || isAbsent) && (
+                              <button
+                                type="button"
+                                onClick={() => handleCompCheckinStatus(reg, 'pending')}
+                                className="px-2.5 py-1 rounded-lg text-[11px] font-bold border bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200 cursor-pointer"
+                              >
+                                ยกเลิกการลงทะเบียน
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              disabled={metaApproved}
+                              onClick={() => handleCompCheckinStatus(reg, 'absent')}
+                              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border ${
+                                metaApproved
+                                  ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                                  : isAbsent
+                                  ? 'bg-rose-600 text-white border-rose-600 cursor-pointer'
+                                  : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200 cursor-pointer'
+                              }`}
+                            >
+                              ไม่เข้าร่วม
+                            </button>
+                          </div>
+                        </td>
+                        <td className="py-3 px-3 text-right">
+                          <div className="inline-flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => startEditCompManageReg(reg)}
+                              className="p-1.5 rounded-lg bg-sky-50 text-sky-700 hover:bg-sky-100 cursor-pointer"
+                              aria-label="แก้ไขทีม"
+                            >
+                              <Edit3 className="w-4 h-4" />
+                            </button>
+                            {confirmDeleteRegId === reg.id ? (
+                              <div className="inline-flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteRegistration(reg.id)}
+                                  className="px-2 py-1 rounded-lg bg-rose-600 text-white text-[11px] font-bold cursor-pointer"
+                                >
+                                  ยืนยันยกเลิกทีม
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteRegId(null)}
+                                  className="px-2 py-1 rounded-lg bg-slate-100 text-slate-600 text-[11px] font-bold cursor-pointer"
+                                >
+                                  กลับ
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteRegId(reg.id)}
+                                className="px-2 py-1 rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100 text-[11px] font-bold cursor-pointer inline-flex items-center gap-1"
+                                aria-label="ยกเลิกการลงทะเบียนทีม"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>ถอนทีม</span>
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   const renderAdminCompetitionManagePage = () => {
     if (authSession.role !== 'admin' && authSession.role !== 'manager') {
       return (
@@ -9733,203 +11081,6 @@ export default function App() {
       }
     };
 
-    const resetCompManageRegForm = (compId: string = selectedComp.id, lvl: string = adminCompManageLevel) => {
-      const targetComp = COMPETITIONS.find((c) => c.id === compId) || COMPETITIONS[0];
-      const resolvedLevel = lvl !== 'ทั้งหมด' && targetComp.levels.includes(lvl) ? lvl : targetComp.levels[0];
-      setCompManageRegForm({
-        editingId: null,
-        schoolId: schools[0]?.id || '',
-        level: resolvedLevel,
-        studentNames: Array.from({ length: Math.max(1, targetComp.teamSize) }, () => ''),
-        studentPhotos: Array.from({ length: Math.max(1, targetComp.teamSize) }, () => ''),
-        coachNames: [''],
-        coachPhotos: [''],
-        qualifyingSong: '',
-        finalSong: ''
-      });
-    };
-
-    const startEditCompManageReg = (reg: RegistrationItem) => {
-      const targetSize = Math.max(selectedComp.teamSize, reg.students.length, 1);
-      const normalizedStudents = Array.from({ length: targetSize }, (_, idx) => ({
-        name: reg.students[idx]?.name || '',
-        photoUrl: reg.students[idx]?.photoUrl || ''
-      }));
-      const normalizedCoaches =
-        reg.coaches.length > 0
-          ? reg.coaches.map((c) => (typeof c === 'string' ? { name: c, photoUrl: '' } : { name: c.name || '', photoUrl: c.photoUrl || '' }))
-          : [{ name: '', photoUrl: '' }];
-      setCompManageRegForm({
-        editingId: reg.id,
-        schoolId: reg.schoolId || schools[0]?.id || '',
-        level: selectedComp.levels.includes(reg.level) ? reg.level : selectedComp.levels[0],
-        studentNames: normalizedStudents.map((s) => s.name),
-        studentPhotos: normalizedStudents.map((s) => s.photoUrl),
-        coachNames: normalizedCoaches.map((c) => c.name),
-        coachPhotos: normalizedCoaches.map((c) => c.photoUrl),
-        qualifyingSong: reg.qualifyingSong || '',
-        finalSong: reg.finalSong || ''
-      });
-    };
-
-    const handleCompManagePhotoUpload = async (kind: 'student' | 'coach', idx: number, file?: File) => {
-      if (!file) return;
-      const uploadedUrl = await uploadImageToServer(file, kind === 'coach' ? 'coaches' : 'students', 600, 0.85);
-      if (!uploadedUrl) return;
-      setCompManageRegForm((prev) => {
-        if (kind === 'student') {
-          const nextPhotos = [...prev.studentPhotos];
-          nextPhotos[idx] = uploadedUrl;
-          return { ...prev, studentPhotos: nextPhotos };
-        }
-        const nextPhotos = [...prev.coachPhotos];
-        nextPhotos[idx] = uploadedUrl;
-        return { ...prev, coachPhotos: nextPhotos };
-      });
-    };
-
-    const handleCompManageRegSubmit = async (e: React.FormEvent) => {
-      e.preventDefault();
-      if (!compManageRegForm.schoolId) {
-        showToast('กรุณาเลือกโรงเรียนที่เข้าแข่งขัน', 'error');
-        return;
-      }
-      const cleanedStudents = compManageRegForm.studentNames
-        .map((name, i) => ({
-          name: name.trim(),
-          photoUrl: compManageRegForm.studentPhotos[i] || ''
-        }))
-        .filter((s) => s.name.length > 0);
-      if (cleanedStudents.length === 0) {
-        showToast('กรุณาระบุชื่อผู้เข้าแข่งขันอย่างน้อย 1 คน', 'error');
-        return;
-      }
-      const cleanedCoaches = compManageRegForm.coachNames
-        .map((c, i) => ({
-          name: c.trim(),
-          photoUrl: compManageRegForm.coachPhotos[i] || ''
-        }))
-        .filter((c) => c.name.length > 0);
-
-      if (selectedComp.requiresSongs && (!compManageRegForm.qualifyingSong.trim() || !compManageRegForm.finalSong.trim())) {
-        showToast('รายการร้องเพลงไทยลูกทุ่งต้องระบุเพลงรอบคัดเลือกและรอบตัดสินให้ครบถ้วน', 'error');
-        return;
-      }
-
-      const resolvedLevel = selectedComp.levels.includes(compManageRegForm.level)
-        ? compManageRegForm.level
-        : selectedComp.levels[0];
-
-      try {
-        const res = await appApiCall('/registrations/save', {
-          id: compManageRegForm.editingId || undefined,
-          schoolId: compManageRegForm.schoolId,
-          competitionId: selectedComp.id,
-          level: resolvedLevel,
-          students: cleanedStudents,
-          coaches: cleanedCoaches.length > 0 ? cleanedCoaches : [{ name: 'ครูผู้ฝึกสอน', photoUrl: '' }],
-          qualifyingSong: selectedComp.requiresSongs ? compManageRegForm.qualifyingSong.trim() : '',
-          finalSong: selectedComp.requiresSongs ? compManageRegForm.finalSong.trim() : ''
-        });
-        showToast(res.message || 'บันทึกการลงทะเบียนเข้าร่วมแข่งขันเรียบร้อยแล้ว');
-        resetCompManageRegForm(selectedComp.id, adminCompManageLevel);
-      } catch (err) {
-        showToast(err instanceof Error ? err.message : 'ไม่สามารถบันทึกข้อมูลการลงทะเบียนได้', 'error');
-      }
-    };
-
-    const handleCompCheckinStatus = async (
-      regItem: RegistrationItem,
-      nextStatus: 'checked_in' | 'pending' | 'absent'
-    ) => {
-      try {
-        const res = await appApiCall('/competition/checkin', {
-          registrationId: regItem.id,
-          status: nextStatus
-        });
-        showToast(res.message || 'บันทึกสถานะรายงานตัวเข้าร่วมแข่งขันเรียบร้อยแล้ว');
-      } catch (err) {
-        showToast(err instanceof Error ? err.message : 'ไม่สามารถบันทึกสถานะรายงานตัวได้', 'error');
-      }
-    };
-
-    const handleSchoolBatchCheckinStatus = async (
-      schoolId: string,
-      nextStatus: 'checked_in' | 'pending' | 'absent'
-    ) => {
-      try {
-        const res = await appApiCall('/competition/checkin', {
-          schoolId,
-          competitionId: selectedComp.id,
-          level: adminCompManageLevel,
-          status: nextStatus
-        });
-        showToast(res.message || 'อัปเดตสถานะการลงทะเบียนแบบโรงเรียนเรียบร้อยแล้ว');
-      } catch (err) {
-        showToast(err instanceof Error ? err.message : 'ไม่สามารถอัปเดตสถานะแบบโรงเรียนได้', 'error');
-      }
-    };
-
-    const checkedInCount = compRegistrations.filter(
-      (r) => !absentRegs[r.id] && Boolean(checkIns[r.id]?.checkedIn)
-    ).length;
-    const absentCompCount = compRegistrations.filter(
-      (r) => Boolean(absentRegs[r.id])
-    ).length;
-    const pendingCheckinCount = Math.max(0, compRegistrations.length - checkedInCount - absentCompCount);
-
-    const checkinSearchQ = compManageCheckinSearch.trim().toLowerCase();
-    const filteredCheckinRegs = compRegistrations.filter((r) => {
-      const isAbsent = Boolean(absentRegs[r.id]);
-      const isCheckedIn = !isAbsent && Boolean(checkIns[r.id]?.checkedIn);
-      const resolvedStatus: 'checked_in' | 'pending' | 'absent' = isAbsent
-        ? 'absent'
-        : isCheckedIn
-        ? 'checked_in'
-        : 'pending';
-      if (compManageCheckinFilter !== 'all' && resolvedStatus !== compManageCheckinFilter) {
-        return false;
-      }
-      if (!checkinSearchQ) return true;
-      const sch = schools.find((s) => s.id === r.schoolId);
-      const text = [
-        sch?.name || '',
-        r.level,
-        r.students.map((st) => st.name).join(' '),
-        r.coaches.map((c) => (typeof c === 'string' ? c : c.name)).join(' ')
-      ]
-        .join(' ')
-        .toLowerCase();
-      return text.includes(checkinSearchQ);
-    });
-
-    const groupedBySchool = schools
-      .map((sch) => {
-        const schRegs = compRegistrations.filter((r) => r.schoolId === sch.id);
-        return { school: sch, regs: schRegs };
-      })
-      .filter(({ school, regs }) => {
-        if (regs.length === 0) return false;
-        if (compManageCheckinFilter !== 'all') {
-          const matchesFilter = regs.some((r) => {
-            const isAb = Boolean(absentRegs[r.id]);
-            const isChk = !isAb && Boolean(checkIns[r.id]?.checkedIn);
-            const st = isAb ? 'absent' : isChk ? 'checked_in' : 'pending';
-            return st === compManageCheckinFilter;
-          });
-          if (!matchesFilter) return false;
-        }
-        if (!checkinSearchQ) return true;
-        const text = [
-          school.name,
-          school.schoolCode,
-          ...regs.map((r) => `${r.level} ${r.students.map((s) => s.name).join(' ')}`)
-        ]
-          .join(' ')
-          .toLowerCase();
-        return text.includes(checkinSearchQ);
-      });
-
     const isTwoRoundSelected = isTwoRoundCompetition(selectedComp.id);
 
     return (
@@ -9942,16 +11093,16 @@ export default function App() {
                 <span>การจัดการแข่งขัน</span>
               </h2>
               <p className="text-sm text-slate-500 mt-1">
-                จัดการใบลงทะเบียน/ใบลงคะแนนรายกิจกรรม ลงทะเบียนเข้าร่วมแบบทีมหรือโรงเรียน และกำหนดเกณฑ์การตัดสิน
+                จัดการใบลงทะเบียน ใบลงคะแนนรายบุคคล ใบลงคะแนนรวมของกรรมการทั้งหมด และกำหนดเกณฑ์การตัดสิน
               </p>
             </div>
 
             {adminCompManageTab === 'sheets' && (
-              <div className="flex flex-wrap items-center gap-2.5">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   onClick={() => handleDownloadRegistrationSheetPdf(selectedComp.id, adminCompManageLevel)}
-                  className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:opacity-95 text-white px-4 py-2.5 text-xs sm:text-sm font-bold shadow-sm cursor-pointer"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:opacity-95 text-white px-3.5 py-2 text-xs sm:text-sm font-bold shadow-sm cursor-pointer"
                 >
                   <FileDown className="w-4 h-4" />
                   <span>โหลดใบลงทะเบียน (PDF)</span>
@@ -9960,10 +11111,19 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => handleDownloadScoreSheetPdf(selectedComp.id, adminCompManageLevel)}
-                  className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:opacity-95 text-white px-4 py-2.5 text-xs sm:text-sm font-bold shadow-sm cursor-pointer"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:opacity-95 text-white px-3.5 py-2 text-xs sm:text-sm font-bold shadow-sm cursor-pointer"
                 >
                   <Printer className="w-4 h-4" />
-                  <span>จัดสร้างใบลงคะแนน (PDF)</span>
+                  <span>ใบลงคะแนนรายกรรมการ (PDF)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleDownloadCombinedJudgeScoreSheetPdf(selectedComp.id, adminCompManageLevel)}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-teal-700 to-cyan-700 hover:opacity-95 text-white px-3.5 py-2 text-xs sm:text-sm font-bold shadow-sm cursor-pointer"
+                >
+                  <Printer className="w-4 h-4" />
+                  <span>ใบลงคะแนนรวมของกรรมการทั้งหมด (PDF)</span>
                 </button>
               </div>
             )}
@@ -9982,19 +11142,6 @@ export default function App() {
             >
               <FileText className="w-4 h-4" />
               <span>ใบลงทะเบียน & ใบลงคะแนนรายกิจกรรม</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setAdminCompManageTab('registration')}
-              className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition cursor-pointer ${
-                adminCompManageTab === 'registration'
-                  ? 'bg-white text-indigo-700 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <UserCheck className="w-4 h-4" />
-              <span>ลงทะเบียนเข้าร่วมแข่งขัน</span>
             </button>
 
             <button
@@ -10023,7 +11170,6 @@ export default function App() {
                   setEditingCriterionIdx(null);
                   setNewCriterionLabel('');
                   setNewCriterionMax('10');
-                  resetCompManageRegForm(nextCompId, 'ทั้งหมด');
                 }}
                 className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm bg-slate-50 outline-none focus:border-amber-500"
               >
@@ -10039,13 +11185,7 @@ export default function App() {
               <label className="block text-xs font-bold text-slate-600 mb-1">เลือกระดับชั้น</label>
               <select
                 value={adminCompManageLevel}
-                onChange={(e) => {
-                  const nextLvl = e.target.value;
-                  setAdminCompManageLevel(nextLvl);
-                  if (!compManageRegForm.editingId && nextLvl !== 'ทั้งหมด') {
-                    setCompManageRegForm((prev) => ({ ...prev, level: nextLvl }));
-                  }
-                }}
+                onChange={(e) => setAdminCompManageLevel(e.target.value)}
                 className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm bg-slate-50 outline-none focus:border-amber-500"
               >
                 <option value="ทั้งหมด">ทุกระดับชั้น ({selectedComp.levels.length} ระดับ)</option>
@@ -10058,670 +11198,6 @@ export default function App() {
             </div>
           </div>
         </div>
-
-        {/* Sub-menu: ลงทะเบียนเข้าร่วมแข่งขัน (แบบรายทีม / แบบรายโรงเรียน + ยกเลิกการลงทะเบียน) */}
-        {adminCompManageTab === 'registration' && (
-          <div className="space-y-6">
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-              <div className="rounded-2xl bg-white p-4 border border-slate-100 shadow-sm">
-                <div className="text-xs font-semibold text-slate-500">ลงทะเบียนทั้งหมด</div>
-                <div className="text-2xl font-extrabold text-slate-800 mt-1">{compRegistrations.length} ทีม</div>
-              </div>
-              <div className="rounded-2xl bg-emerald-50/80 p-4 border border-emerald-200 shadow-sm">
-                <div className="text-xs font-semibold text-emerald-700">ลงทะเบียนเข้าร่วมแล้ว</div>
-                <div className="text-2xl font-extrabold text-emerald-800 mt-1">{checkedInCount} ทีม</div>
-              </div>
-              <div className="rounded-2xl bg-amber-50/80 p-4 border border-amber-200 shadow-sm">
-                <div className="text-xs font-semibold text-amber-700">รอลงทะเบียนเข้าร่วม</div>
-                <div className="text-2xl font-extrabold text-amber-800 mt-1">{pendingCheckinCount} ทีม</div>
-              </div>
-              <div className="rounded-2xl bg-rose-50/80 p-4 border border-rose-200 shadow-sm">
-                <div className="text-xs font-semibold text-rose-700">ไม่เข้าร่วมแข่งขัน</div>
-                <div className="text-2xl font-extrabold text-rose-800 mt-1">{absentCompCount} ทีม</div>
-              </div>
-            </div>
-
-            <form
-              onSubmit={handleCompManageRegSubmit}
-              className="rounded-2xl bg-white p-6 shadow-sm border border-indigo-100 space-y-5"
-            >
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
-                <div>
-                  <h3 className="text-base sm:text-lg font-bold text-slate-800 flex items-center gap-2">
-                    <UserPlus className="w-5 h-5 text-indigo-600" />
-                    <span>
-                      {compManageRegForm.editingId
-                        ? `แก้ไขข้อมูลทีมเข้าแข่งขัน — ${selectedComp.name}`
-                        : `เพิ่ม / ลงทะเบียนทีมเข้าแข่งขัน — ${selectedComp.name}`}
-                    </span>
-                  </h3>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    ผู้ดูแลระบบและผู้จัดการแข่งขันสามารถเพิ่ม แก้ไข หรือยกเลิกการลงทะเบียนทีมเข้าแข่งขันได้ตลอดเวลา
-                  </p>
-                </div>
-                {compManageRegForm.editingId && (
-                  <button
-                    type="button"
-                    onClick={() => resetCompManageRegForm(selectedComp.id, adminCompManageLevel)}
-                    className="self-start rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 px-3 py-1.5 text-xs font-bold cursor-pointer"
-                  >
-                    ยกเลิกการแก้ไข
-                  </button>
-                )}
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 mb-1">โรงเรียน / สถานศึกษา *</label>
-                  <select
-                    value={compManageRegForm.schoolId}
-                    onChange={(e) => setCompManageRegForm((p) => ({ ...p, schoolId: e.target.value }))}
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm outline-none focus:border-indigo-500"
-                  >
-                    {schools.map((sch) => (
-                      <option key={sch.id} value={sch.id}>
-                        {sch.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 mb-1">ระดับชั้น *</label>
-                  <select
-                    value={compManageRegForm.level}
-                    onChange={(e) => setCompManageRegForm((p) => ({ ...p, level: e.target.value }))}
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm outline-none focus:border-indigo-500"
-                  >
-                    {selectedComp.levels.map((lvl) => (
-                      <option key={lvl} value={lvl}>
-                        {lvl}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-bold text-slate-700">
-                    รายชื่อนักเรียนผู้เข้าแข่งขัน ({compManageRegForm.studentNames.length} คน)
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setCompManageRegForm((p) => ({
-                        ...p,
-                        studentNames: [...p.studentNames, ''],
-                        studentPhotos: [...p.studentPhotos, '']
-                      }))
-                    }
-                    className="inline-flex items-center gap-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-2.5 py-1 text-xs font-bold cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>เพิ่มนักเรียน</span>
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {compManageRegForm.studentNames.map((stName, idx) => (
-                    <div key={idx} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 flex items-center gap-3">
-                      {compManageRegForm.studentPhotos[idx] ? (
-                        <img
-                          src={compManageRegForm.studentPhotos[idx]}
-                          alt="นักเรียน"
-                          className="w-11 h-11 rounded-xl object-cover border border-slate-200 shrink-0"
-                        />
-                      ) : (
-                        <div className="w-11 h-11 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-400 shrink-0">
-                          <ImageIcon className="w-5 h-5" />
-                        </div>
-                      )}
-                      <div className="flex-1 min-w-0 space-y-1.5">
-                        <input
-                          type="text"
-                          value={stName}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setCompManageRegForm((p) => {
-                              const next = [...p.studentNames];
-                              next[idx] = val;
-                              return { ...p, studentNames: next };
-                            });
-                          }}
-                          placeholder={`ชื่อ-นามสกุล นักเรียนคนที่ ${idx + 1}`}
-                          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm outline-none focus:border-indigo-500"
-                        />
-                        <div className="flex items-center gap-2">
-                          <label className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-700 hover:text-indigo-800 cursor-pointer">
-                            <Upload className="w-3 h-3" />
-                            <span>{compManageRegForm.studentPhotos[idx] ? 'เปลี่ยนรูป' : 'อัปโหลดรูป'}</span>
-                            <input
-                              type="file"
-                              accept="image/*"
-                              className="hidden"
-                              onChange={(e) => handleCompManagePhotoUpload('student', idx, e.target.files?.[0])}
-                            />
-                          </label>
-                          {compManageRegForm.studentNames.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setCompManageRegForm((p) => ({
-                                  ...p,
-                                  studentNames: p.studentNames.filter((_, i) => i !== idx),
-                                  studentPhotos: p.studentPhotos.filter((_, i) => i !== idx)
-                                }))
-                              }
-                              className="text-[11px] font-bold text-rose-600 hover:underline cursor-pointer"
-                            >
-                              ลบช่องนี้
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-bold text-slate-700">
-                    รายชื่อครูผู้ฝึกสอน ({compManageRegForm.coachNames.length} ท่าน)
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setCompManageRegForm((p) => ({
-                        ...p,
-                        coachNames: [...p.coachNames, ''],
-                        coachPhotos: [...p.coachPhotos, '']
-                      }))
-                    }
-                    className="inline-flex items-center gap-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 px-2.5 py-1 text-xs font-bold cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>เพิ่มครูผู้ฝึกสอน</span>
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {compManageRegForm.coachNames.map((cName, idx) => (
-                    <div key={idx} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 flex items-center gap-3">
-                      {compManageRegForm.coachPhotos[idx] ? (
-                        <img
-                          src={compManageRegForm.coachPhotos[idx]}
-                          alt="ครูผู้ฝึกสอน"
-                          className="w-11 h-11 rounded-xl object-cover border border-slate-200 shrink-0"
-                        />
-                      ) : (
-                        <div className="w-11 h-11 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-400 shrink-0">
-                          <ImageIcon className="w-5 h-5" />
-                        </div>
-                      )}
-                      <div className="flex-1 min-w-0 space-y-1.5">
-                        <input
-                          type="text"
-                          value={cName}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setCompManageRegForm((p) => {
-                              const next = [...p.coachNames];
-                              next[idx] = val;
-                              return { ...p, coachNames: next };
-                            });
-                          }}
-                          placeholder={`ชื่อ-นามสกุล ครูผู้ฝึกสอนท่านที่ ${idx + 1}`}
-                          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm outline-none focus:border-indigo-500"
-                        />
-                        <div className="flex items-center gap-2">
-                          <label className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 hover:text-emerald-800 cursor-pointer">
-                            <Upload className="w-3 h-3" />
-                            <span>{compManageRegForm.coachPhotos[idx] ? 'เปลี่ยนรูป' : 'อัปโหลดรูป'}</span>
-                            <input
-                              type="file"
-                              accept="image/*"
-                              className="hidden"
-                              onChange={(e) => handleCompManagePhotoUpload('coach', idx, e.target.files?.[0])}
-                            />
-                          </label>
-                          {compManageRegForm.coachNames.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setCompManageRegForm((p) => ({
-                                  ...p,
-                                  coachNames: p.coachNames.filter((_, i) => i !== idx),
-                                  coachPhotos: p.coachPhotos.filter((_, i) => i !== idx)
-                                }))
-                              }
-                              className="text-[11px] font-bold text-rose-600 hover:underline cursor-pointer"
-                            >
-                              ลบช่องนี้
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {selectedComp.requiresSongs && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 rounded-xl bg-amber-50/70 border border-amber-200 p-4">
-                  <div>
-                    <label className="block text-xs font-bold text-amber-900 mb-1">ชื่อเพลงรอบคัดเลือก *</label>
-                    <input
-                      type="text"
-                      value={compManageRegForm.qualifyingSong}
-                      onChange={(e) => setCompManageRegForm((p) => ({ ...p, qualifyingSong: e.target.value }))}
-                      placeholder="ระบุชื่อเพลงที่ใช้ประกวดรอบคัดเลือก"
-                      className="w-full rounded-xl border border-amber-200 bg-white px-3.5 py-2 text-sm outline-none focus:border-amber-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-amber-900 mb-1">ชื่อเพลงรอบตัดสิน *</label>
-                    <input
-                      type="text"
-                      value={compManageRegForm.finalSong}
-                      onChange={(e) => setCompManageRegForm((p) => ({ ...p, finalSong: e.target.value }))}
-                      placeholder="ระบุชื่อเพลงที่ใช้ประกวดรอบตัดสิน"
-                      className="w-full rounded-xl border border-amber-200 bg-white px-3.5 py-2 text-sm outline-none focus:border-amber-500"
-                    />
-                  </div>
-                </div>
-              )}
-
-              <div className="flex flex-wrap justify-end gap-2">
-                <button
-                  type="submit"
-                  className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-sky-600 hover:opacity-95 text-white font-bold px-5 py-2.5 text-sm shadow-sm cursor-pointer"
-                >
-                  <Check className="w-4 h-4" />
-                  <span>{compManageRegForm.editingId ? 'บันทึกการแก้ไขทีมเข้าแข่งขัน' : 'บันทึกการลงทะเบียนเข้าร่วมแข่งขัน'}</span>
-                </button>
-              </div>
-            </form>
-
-            {/* Check-in & Registered Teams / Schools Panel */}
-            <div className="rounded-2xl bg-white p-5 shadow-sm border border-slate-100 space-y-4">
-              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
-                    <UserCheck className="w-5 h-5 text-emerald-600" />
-                    <span>การลงทะเบียนเข้าร่วมแข่งขันและยกเลิกการลงทะเบียน</span>
-                  </h3>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    เลือกจัดการลงทะเบียนเข้าร่วมหรือยกเลิกการลงทะเบียนได้ทั้งแบบรายทีมและแบบรายโรงเรียน
-                  </p>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="inline-flex rounded-xl bg-slate-100 p-1">
-                    <button
-                      type="button"
-                      onClick={() => setCompManageRegMode('team')}
-                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
-                        compManageRegMode === 'team'
-                          ? 'bg-white text-indigo-700 shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      <Users className="w-3.5 h-3.5" />
-                      <span>แบบรายทีม</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setCompManageRegMode('school')}
-                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
-                        compManageRegMode === 'school'
-                          ? 'bg-white text-emerald-700 shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      <School className="w-3.5 h-3.5" />
-                      <span>แบบรายโรงเรียน</span>
-                    </button>
-                  </div>
-
-                  <div className="relative">
-                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="text"
-                      value={compManageCheckinSearch}
-                      onChange={(e) => setCompManageCheckinSearch(e.target.value)}
-                      placeholder="ค้นหาโรงเรียน / นักเรียน..."
-                      className="rounded-xl border border-slate-200 pl-9 pr-3 py-2 text-xs sm:text-sm bg-slate-50 focus:bg-white outline-none"
-                    />
-                  </div>
-                  <select
-                    value={compManageCheckinFilter}
-                    onChange={(e) => setCompManageCheckinFilter(e.target.value as 'all' | 'checked_in' | 'pending' | 'absent')}
-                    className="rounded-xl border border-slate-200 px-3 py-2 text-xs sm:text-sm bg-slate-50 outline-none"
-                  >
-                    <option value="all">ทั้งหมด ({compRegistrations.length})</option>
-                    <option value="checked_in">ลงทะเบียนแล้ว ({checkedInCount})</option>
-                    <option value="pending">รอลงทะเบียน ({pendingCheckinCount})</option>
-                    <option value="absent">ไม่เข้าร่วมแข่งขัน ({absentCompCount})</option>
-                  </select>
-                </div>
-              </div>
-
-              {compManageRegMode === 'school' ? (
-                groupedBySchool.length === 0 ? (
-                  <div className="text-center py-8 text-sm text-slate-400">
-                    ไม่พบข้อมูลโรงเรียนที่มีทีมสมัครในเงื่อนไขที่เลือก
-                  </div>
-                ) : (
-                  <div className="space-y-4">
-                    {groupedBySchool.map(({ school, regs }) => {
-                      const schCheckedIn = regs.filter((r) => !absentRegs[r.id] && Boolean(checkIns[r.id]?.checkedIn)).length;
-                      const schAbsent = regs.filter((r) => Boolean(absentRegs[r.id])).length;
-                      const schPending = Math.max(0, regs.length - schCheckedIn - schAbsent);
-                      const anyLevelApproved = regs.some((r) => Boolean(evalMeta[`${r.competitionId}__${r.level}`]?.approved));
-                      return (
-                        <div key={school.id} className="rounded-2xl border border-slate-200 bg-slate-50/60 overflow-hidden">
-                          <div className="px-4 py-3.5 bg-white border-b border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-                            <div>
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="font-bold text-slate-800 text-sm sm:text-base">{school.name}</span>
-                                <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
-                                  รหัส {school.schoolCode}
-                                </span>
-                                <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
-                                  ทั้งหมด {regs.length} ทีม (เข้าร่วมแล้ว {schCheckedIn} • รอ {schPending}{schAbsent > 0 ? ` • ไม่ร่วม ${schAbsent}` : ''})
-                                </span>
-                              </div>
-                            </div>
-
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() => handleSchoolBatchCheckinStatus(school.id, 'checked_in')}
-                                className="inline-flex items-center gap-1 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 text-xs font-bold cursor-pointer shadow-xs"
-                              >
-                                <CheckCircle2 className="w-3.5 h-3.5" />
-                                <span>ลงทะเบียนทั้งโรงเรียน</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleSchoolBatchCheckinStatus(school.id, 'pending')}
-                                className="inline-flex items-center gap-1 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 px-3 py-1.5 text-xs font-bold cursor-pointer"
-                              >
-                                <XCircle className="w-3.5 h-3.5" />
-                                <span>ยกเลิกการลงทะเบียนทั้งโรงเรียน</span>
-                              </button>
-                              <button
-                                type="button"
-                                disabled={anyLevelApproved}
-                                onClick={() => handleSchoolBatchCheckinStatus(school.id, 'absent')}
-                                className={`inline-flex items-center gap-1 rounded-xl px-3 py-1.5 text-xs font-bold border ${
-                                  anyLevelApproved
-                                    ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
-                                    : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200 cursor-pointer'
-                                }`}
-                              >
-                                <UserX className="w-3.5 h-3.5" />
-                                <span>ไม่เข้าร่วมทั้งโรงเรียน</span>
-                              </button>
-                            </div>
-                          </div>
-
-                          <div className="p-3 space-y-2">
-                            {regs.map((reg) => {
-                              const metaApproved = Boolean(evalMeta[`${reg.competitionId}__${reg.level}`]?.approved);
-                              const isAbsent = Boolean(absentRegs[reg.id]);
-                              const isCheckedIn = !isAbsent && Boolean(checkIns[reg.id]?.checkedIn);
-                              return (
-                                <div key={reg.id} className="rounded-xl bg-white border border-slate-200/80 px-3.5 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-                                  <div>
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <span className="font-bold text-indigo-700">{reg.level}</span>
-                                      {isAbsent ? (
-                                        <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 font-bold text-[11px]">ไม่เข้าร่วมแข่งขัน</span>
-                                      ) : isCheckedIn ? (
-                                        <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[11px]">ลงทะเบียนแล้ว</span>
-                                      ) : (
-                                        <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold text-[11px]">รอลงทะเบียน</span>
-                                      )}
-                                    </div>
-                                    <div className="font-semibold text-slate-800 mt-0.5">
-                                      {reg.students.map((st) => st.name).join(', ') || '-'}
-                                    </div>
-                                  </div>
-                                  <div className="flex flex-wrap items-center gap-1.5">
-                                    {!isCheckedIn ? (
-                                      <button
-                                        type="button"
-                                        onClick={() => handleCompCheckinStatus(reg, 'checked_in')}
-                                        className="px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 font-bold cursor-pointer"
-                                      >
-                                        ลงทะเบียนเข้าร่วม
-                                      </button>
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        onClick={() => handleCompCheckinStatus(reg, 'pending')}
-                                        className="px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-bold cursor-pointer"
-                                      >
-                                        ยกเลิกการลงทะเบียน
-                                      </button>
-                                    )}
-                                    {isAbsent && (
-                                      <button
-                                        type="button"
-                                        onClick={() => handleCompCheckinStatus(reg, 'pending')}
-                                        className="px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-bold cursor-pointer"
-                                      >
-                                        ยกเลิกไม่เข้าร่วม
-                                      </button>
-                                    )}
-                                    <button
-                                      type="button"
-                                      onClick={() => startEditCompManageReg(reg)}
-                                      className="p-1.5 rounded-lg bg-sky-50 text-sky-700 hover:bg-sky-100 cursor-pointer"
-                                      aria-label="แก้ไขทีม"
-                                    >
-                                      <Edit3 className="w-3.5 h-3.5" />
-                                    </button>
-                                    {confirmDeleteRegId === reg.id ? (
-                                      <span className="inline-flex items-center gap-1">
-                                        <button
-                                          type="button"
-                                          onClick={() => handleDeleteRegistration(reg.id)}
-                                          className="px-2 py-1 rounded-lg bg-rose-600 text-white font-bold cursor-pointer"
-                                        >
-                                          ยืนยันถอนทีม
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => setConfirmDeleteRegId(null)}
-                                          className="px-2 py-1 rounded-lg bg-slate-100 text-slate-600 font-bold cursor-pointer"
-                                        >
-                                          กลับ
-                                        </button>
-                                      </span>
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        disabled={metaApproved}
-                                        onClick={() => setConfirmDeleteRegId(reg.id)}
-                                        className={`px-2 py-1 rounded-lg font-bold border ${
-                                          metaApproved
-                                            ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
-                                            : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200 cursor-pointer'
-                                        }`}
-                                      >
-                                        ถอนทีม
-                                      </button>
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )
-              ) : filteredCheckinRegs.length === 0 ? (
-                <div className="text-center py-8 text-sm text-slate-400">
-                  ไม่พบรายการลงทะเบียนเข้าร่วมแข่งขันในเงื่อนไขที่เลือก
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse text-xs sm:text-sm">
-                    <thead>
-                      <tr className="bg-slate-50 text-slate-600 border-b border-slate-200">
-                        <th className="py-2.5 px-3 w-12 text-center">ลำดับ</th>
-                        <th className="py-2.5 px-3">โรงเรียน / ระดับชั้น</th>
-                        <th className="py-2.5 px-3">ผู้เข้าแข่งขัน & ครูผู้ฝึกสอน</th>
-                        <th className="py-2.5 px-3">สถานะการลงทะเบียน</th>
-                        <th className="py-2.5 px-3">ลงทะเบียน / ยกเลิกการลงทะเบียน</th>
-                        <th className="py-2.5 px-3 text-right">จัดการทีม</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {filteredCheckinRegs.map((reg, idx) => {
-                        const sch = schools.find((s) => s.id === reg.schoolId);
-                        const metaApproved = Boolean(evalMeta[`${reg.competitionId}__${reg.level}`]?.approved);
-                        const isAbsent = Boolean(absentRegs[reg.id]);
-                        const isCheckedIn = !isAbsent && Boolean(checkIns[reg.id]?.checkedIn);
-                        const checkedRecord = checkIns[reg.id];
-
-                        return (
-                          <tr key={reg.id} className={isAbsent ? 'bg-rose-50/30' : 'hover:bg-slate-50/60'}>
-                            <td className="py-3 px-3 text-center font-bold text-slate-700">{idx + 1}</td>
-                            <td className="py-3 px-3">
-                              <div className="font-bold text-slate-800">{sch?.name || '-'}</div>
-                              <div className="text-[11px] font-semibold text-indigo-700 mt-0.5">{reg.level}</div>
-                            </td>
-                            <td className="py-3 px-3">
-                              <div className="font-medium text-slate-800">
-                                {reg.students.map((st) => st.name).join(', ') || '-'}
-                              </div>
-                              <div className="text-[11px] text-slate-500 mt-0.5">
-                                ครู: {reg.coaches.map((c) => (typeof c === 'string' ? c : c.name)).join(', ') || '-'}
-                              </div>
-                              {selectedComp.requiresSongs && (
-                                <div className="text-[11px] text-amber-700 mt-0.5">
-                                  คัดเลือก: {reg.qualifyingSong || '-'} • ตัดสิน: {reg.finalSong || '-'}
-                                </div>
-                              )}
-                            </td>
-                            <td className="py-3 px-3">
-                              {isAbsent ? (
-                                <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 text-rose-800 border border-rose-200 px-2.5 py-0.5 text-[11px] font-bold">
-                                  <UserX className="w-3 h-3" />
-                                  <span>ไม่เข้าร่วมแข่งขัน</span>
-                                </span>
-                              ) : isCheckedIn ? (
-                                <div>
-                                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 px-2.5 py-0.5 text-[11px] font-bold">
-                                    <CheckCircle2 className="w-3 h-3" />
-                                    <span>ลงทะเบียนแล้ว</span>
-                                  </span>
-                                  {checkedRecord?.updatedBy && (
-                                    <div className="text-[10px] text-slate-500 mt-0.5">โดย {checkedRecord.updatedBy}</div>
-                                  )}
-                                </div>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-800 border border-amber-200 px-2.5 py-0.5 text-[11px] font-bold">
-                                  <Clock className="w-3 h-3" />
-                                  <span>รอลงทะเบียน</span>
-                                </span>
-                              )}
-                            </td>
-                            <td className="py-3 px-3">
-                              <div className="flex flex-wrap gap-1.5">
-                                <button
-                                  type="button"
-                                  onClick={() => handleCompCheckinStatus(reg, 'checked_in')}
-                                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border cursor-pointer ${
-                                    isCheckedIn
-                                      ? 'bg-emerald-600 text-white border-emerald-600'
-                                      : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200'
-                                  }`}
-                                >
-                                  ลงทะเบียนเข้าร่วม
-                                </button>
-                                {(isCheckedIn || isAbsent) && (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleCompCheckinStatus(reg, 'pending')}
-                                    className="px-2.5 py-1 rounded-lg text-[11px] font-bold border bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200 cursor-pointer"
-                                  >
-                                    ยกเลิกการลงทะเบียน
-                                  </button>
-                                )}
-                                <button
-                                  type="button"
-                                  disabled={metaApproved}
-                                  onClick={() => handleCompCheckinStatus(reg, 'absent')}
-                                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border ${
-                                    metaApproved
-                                      ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
-                                      : isAbsent
-                                      ? 'bg-rose-600 text-white border-rose-600 cursor-pointer'
-                                      : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200 cursor-pointer'
-                                  }`}
-                                >
-                                  ไม่เข้าร่วม
-                                </button>
-                              </div>
-                            </td>
-                            <td className="py-3 px-3 text-right">
-                              <div className="inline-flex items-center gap-1.5">
-                                <button
-                                  type="button"
-                                  onClick={() => startEditCompManageReg(reg)}
-                                  className="p-1.5 rounded-lg bg-sky-50 text-sky-700 hover:bg-sky-100 cursor-pointer"
-                                  aria-label="แก้ไขทีม"
-                                >
-                                  <Edit3 className="w-4 h-4" />
-                                </button>
-                                {confirmDeleteRegId === reg.id ? (
-                                  <div className="inline-flex items-center gap-1">
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDeleteRegistration(reg.id)}
-                                      className="px-2 py-1 rounded-lg bg-rose-600 text-white text-[11px] font-bold cursor-pointer"
-                                    >
-                                      ยืนยันยกเลิกทีม
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => setConfirmDeleteRegId(null)}
-                                      className="px-2 py-1 rounded-lg bg-slate-100 text-slate-600 text-[11px] font-bold cursor-pointer"
-                                    >
-                                      กลับ
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => setConfirmDeleteRegId(reg.id)}
-                                    className="px-2 py-1 rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100 text-[11px] font-bold cursor-pointer inline-flex items-center gap-1"
-                                    aria-label="ยกเลิกการลงทะเบียนทีม"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                    <span>ถอนทีม</span>
-                                  </button>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
 
         {/* Sub-menu: ใบลงทะเบียน & ใบลงคะแนนรายกิจกรรม */}
         {adminCompManageTab === 'sheets' && (
@@ -10764,7 +11240,16 @@ export default function App() {
                         className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900/85 hover:bg-slate-900 text-white px-3 py-1.5 text-xs font-bold shadow-sm cursor-pointer"
                       >
                         <Printer className="w-3.5 h-3.5 text-emerald-300" />
-                        <span>ใบลงคะแนน (PDF)</span>
+                        <span>ใบลงคะแนนรายกรรมการ (PDF)</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadCombinedJudgeScoreSheetPdf(selectedComp.id, lvl)}
+                        className="inline-flex items-center gap-1.5 rounded-xl bg-teal-900/90 hover:bg-teal-950 text-white px-3 py-1.5 text-xs font-bold shadow-sm cursor-pointer"
+                      >
+                        <Printer className="w-3.5 h-3.5 text-teal-300" />
+                        <span>ใบลงคะแนนรวมกรรมการ (PDF)</span>
                       </button>
                     </div>
                   </div>
@@ -10799,9 +11284,12 @@ export default function App() {
                               registrations,
                               scores,
                               roundScores,
-                              absentRegs
+                              absentRegs,
+                              recusedJudges
                             ).find((entry) => entry.reg.id === reg.id);
-                            const roundInfo = rankedEntry?.roundInfo || getRegRoundBreakdown(selectedComp.id, reg.id, scores, roundScores);
+                            const roundInfo =
+                              rankedEntry?.roundInfo ||
+                              getRegRoundBreakdown(selectedComp.id, reg.id, scores, roundScores, recusedJudges);
                             const hasScore = !isAbsent && Boolean(rankedEntry?.hasScore);
                             const displayScore = rankedEntry?.score || 0;
                             return (
@@ -10857,6 +11345,545 @@ export default function App() {
             })}
           </div>
         )}
+
+        {/* Sub-menu: กำหนดเกณฑ์การตัดสิน (เพิ่มเติม / แก้ไข / ลบ / คืนค่าเริ่มต้น) */}
+        {adminCompManageTab === 'criteria' && (
+          <div className="space-y-5">
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-emerald-100 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                <div>
+                  <h3 className="text-base sm:text-lg font-bold text-slate-800 flex items-center gap-2">
+                    <SlidersHorizontal className="w-5 h-5 text-emerald-600" />
+                    <span>เกณฑ์การตัดสิน — {selectedComp.name}</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    สามารถเพิ่มเติม แก้ไข หรือลบหัวข้อเกณฑ์การให้คะแนนของกิจกรรมนี้ได้ (ใช้ร่วมกับหน้าลงคะแนนกรรมการและใบลงคะแนน)
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-1.5 text-xs font-extrabold text-emerald-800">
+                    คะแนนรวมทั้งหมด: {activeCriteriaTotal} คะแนน
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleResetDefaultCriteria}
+                    className="rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 px-3 py-1.5 text-xs font-bold cursor-pointer"
+                  >
+                    คืนค่าเกณฑ์เริ่มต้น
+                  </button>
+                </div>
+              </div>
+
+              {selectedComp.id === 'comp-7' && (
+                <div className="rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-xs text-amber-800">
+                  กิจกรรมตอบปัญหาธรรมะโดยปกติให้คะแนนตามจำนวนข้อสอบที่ตอบถูกต้อง (เต็ม 100 ข้อ/คะแนน) แต่ยังสามารถเพิ่มเกณฑ์ย่อยได้หากต้องการ
+                </div>
+              )}
+
+              <form onSubmit={handleAddOrUpdateCriterion} className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end bg-slate-50/70 border border-slate-200/80 rounded-2xl p-4">
+                <div className="md:col-span-6">
+                  <label className="block text-xs font-bold text-slate-600 mb-1">
+                    {editingCriterionIdx !== null ? `แก้ไขชื่อเกณฑ์ (ข้อที่ ${editingCriterionIdx + 1}) *` : 'ชื่อหัวข้อเกณฑ์การตัดสินใหม่ *'}
+                  </label>
+                  <input
+                    type="text"
+                    value={newCriterionLabel}
+                    onChange={(e) => setNewCriterionLabel(e.target.value)}
+                    placeholder="เช่น น้ำเสียงและความชัดเจน, เนื้อหาสอดคล้องธรรมะ"
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div className="md:col-span-3">
+                  <label className="block text-xs font-bold text-slate-600 mb-1">คะแนนเต็ม *</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    step="1"
+                    value={newCriterionMax}
+                    onChange={(e) => setNewCriterionMax(e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div className="md:col-span-3 flex gap-2">
+                  <button
+                    type="submit"
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-4 py-2.5 text-sm shadow-sm cursor-pointer"
+                  >
+                    {editingCriterionIdx !== null ? <Check className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                    <span>{editingCriterionIdx !== null ? 'บันทึกการแก้ไข' : 'เพิ่มเกณฑ์'}</span>
+                  </button>
+                  {editingCriterionIdx !== null && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingCriterionIdx(null);
+                        setNewCriterionLabel('');
+                        setNewCriterionMax('10');
+                      }}
+                      className="rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-slate-600 px-3 py-2.5 text-xs font-bold cursor-pointer"
+                    >
+                      ยกเลิก
+                    </button>
+                  )}
+                </div>
+              </form>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs sm:text-sm">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                      <th className="py-2.5 px-3 w-14 text-center">ลำดับ</th>
+                      <th className="py-2.5 px-3">หัวข้อเกณฑ์การตัดสิน</th>
+                      <th className="py-2.5 px-3 w-36 text-center">คะแนนเต็ม</th>
+                      <th className="py-2.5 px-3 w-36 text-right">จัดการ</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {activeCriteriaList.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} className="py-6 text-center text-slate-400">
+                          ยังไม่มีเกณฑ์ย่อยสำหรับกิจกรรมนี้ สามารถเพิ่มเกณฑ์ด้านบนได้
+                        </td>
+                      </tr>
+                    ) : (
+                      activeCriteriaList.map((crit, idx) => (
+                        <tr
+                          key={crit.key}
+                          className={editingCriterionIdx === idx ? 'bg-emerald-50/70' : 'hover:bg-slate-50/60'}
+                        >
+                          <td className="py-3 px-3 text-center font-bold text-slate-700">{idx + 1}</td>
+                          <td className="py-3 px-3 font-semibold text-slate-800">{crit.label}</td>
+                          <td className="py-3 px-3 text-center font-extrabold text-emerald-700">
+                            {crit.max} คะแนน
+                          </td>
+                          <td className="py-3 px-3 text-right">
+                            <div className="inline-flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleStartEditCriterion(idx)}
+                                className="inline-flex items-center gap-1 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-700 px-2.5 py-1 text-xs font-bold cursor-pointer"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                                <span>แก้ไข</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteCriterion(idx)}
+                                className="inline-flex items-center gap-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 px-2.5 py-1 text-xs font-bold cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>ลบ</span>
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderScoreEntryPage = () => {
+    if (authSession.role !== 'admin' && authSession.role !== 'manager') {
+      return (
+        <div className="rounded-2xl bg-white p-8 text-center border border-slate-100 space-y-3">
+          <ShieldCheck className="w-8 h-8 text-rose-500 mx-auto" />
+          <div className="font-bold text-slate-800">
+            เมนูนี้สำหรับผู้ดูแลระบบหรือผู้จัดการแข่งขันเท่านั้น
+          </div>
+        </div>
+      );
+    }
+
+    const selectedComp = COMPETITIONS.find((c) => c.id === scoreEntryCompId) || COMPETITIONS[0];
+    const resolvedLevel = selectedComp.levels.includes(scoreEntryLevel)
+      ? scoreEntryLevel
+      : selectedComp.levels[0];
+    const isTwoRound = isTwoRoundCompetition(selectedComp.id);
+    const metaKey = `${selectedComp.id}__${resolvedLevel}`;
+    const currentMeta = evalMeta[metaKey] || { status: 'pending', approved: false };
+    const isApproved = Boolean(currentMeta.approved);
+
+    const assignedJudges = judges.filter(
+      (j) =>
+        j.competitionId === selectedComp.id &&
+        String(j.level || '').trim() === resolvedLevel.trim()
+    );
+    const levelRegs = registrations.filter(
+      (r) =>
+        r.competitionId === selectedComp.id &&
+        String(r.level || '').trim() === resolvedLevel.trim()
+    );
+    const activeRegs = levelRegs.filter((r) => !absentRegs[r.id]);
+    const absentCount = levelRegs.length - activeRegs.length;
+
+    const rankedList = isTwoRound
+      ? buildCompetitionRankedList(
+          selectedComp.id,
+          resolvedLevel,
+          registrations,
+          scores,
+          roundScores,
+          absentRegs,
+          recusedJudges
+        )
+      : [];
+    const qualRankByRegId: Record<string, number> = {};
+    rankedList.forEach((e) => {
+      if (e.qualifyingRank !== null) qualRankByRegId[e.reg.id] = e.qualifyingRank;
+    });
+
+    const getStoredJudgeScore = (regId: string, judgeId: string): number | undefined => {
+      if (isTwoRound) {
+        const rs = roundScores[regId] || {};
+        const hasRoundStore = Boolean(roundScores[regId]);
+        return scoreEntryRound === 'final'
+          ? rs.final?.[judgeId]
+          : rs.qualifying?.[judgeId] ?? (!hasRoundStore ? scores[regId]?.[judgeId] : undefined);
+      }
+      return scores[regId]?.[judgeId];
+    };
+
+    const getDraftValue = (regId: string, judgeId: string): string => {
+      if (
+        scoreEntryDraft[regId] &&
+        Object.prototype.hasOwnProperty.call(scoreEntryDraft[regId], judgeId)
+      ) {
+        return scoreEntryDraft[regId][judgeId];
+      }
+      const stored = getStoredJudgeScore(regId, judgeId);
+      return stored !== undefined && stored !== null ? String(stored) : '';
+    };
+
+    const setDraftCell = (regId: string, judgeId: string, val: string) => {
+      setScoreEntryDraft((prev) => ({
+        ...prev,
+        [regId]: {
+          ...(prev[regId] || {}),
+          [judgeId]: val
+        }
+      }));
+    };
+
+    const handleSaveScoreRows = async (targetRegs: RegistrationItem[]) => {
+      if (isApproved) {
+        showToast('ผู้ดูแลระบบอนุมัติผลการแข่งขันแล้ว ไม่สามารถบันทึกหรือแก้ไขคะแนนได้', 'error');
+        return;
+      }
+      const entries = targetRegs.map((reg) => {
+        const judgeScoresPayload: Record<string, string | number> = {};
+        assignedJudges.forEach((j) => {
+          if (recusedJudges[reg.id]?.[j.id]) return;
+          const raw = getDraftValue(reg.id, j.id).trim();
+          if (raw === '') {
+            judgeScoresPayload[j.id] = '';
+          } else {
+            const num = Number(raw);
+            if (!Number.isFinite(num) || num < 0 || num > 100) {
+              throw new Error(`คะแนนต้องอยู่ระหว่าง 0 - 100 (${j.name})`);
+            }
+            judgeScoresPayload[j.id] = num;
+          }
+        });
+        return { registrationId: reg.id, judgeScores: judgeScoresPayload };
+      });
+
+      const res = await appApiCall('/admin/scores/save', {
+        competitionId: selectedComp.id,
+        level: resolvedLevel,
+        round: isTwoRound ? scoreEntryRound : undefined,
+        entries
+      });
+      setScoreEntryDraft((prev) => {
+        const next = { ...prev };
+        targetRegs.forEach((r) => {
+          delete next[r.id];
+        });
+        return next;
+      });
+      showToast(res.message || 'บันทึกผลคะแนนการแข่งขันเรียบร้อยแล้ว');
+    };
+
+    const handleSaveSingleRow = async (reg: RegistrationItem) => {
+      try {
+        await handleSaveScoreRows([reg]);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถบันทึกผลคะแนนได้', 'error');
+      }
+    };
+
+    const handleSaveAllRows = async () => {
+      try {
+        await handleSaveScoreRows(activeRegs);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถบันทึกผลคะแนนทั้งหมดได้', 'error');
+      }
+    };
+
+    return (
+      <div className="space-y-6">
+        <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 space-y-4">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                <Edit3 className="w-6 h-6 text-emerald-600" />
+                <span>บันทึกผลคะแนนการแข่งขัน (รายทีม แยกตามกรรมการ)</span>
+              </h2>
+              <p className="text-sm text-slate-500 mt-1">
+                ผู้ดูแลระบบและผู้จัดการแข่งขันสามารถบันทึกหรือแก้ไขคะแนนรายทีมตามจำนวนกรรมการที่แต่งตั้งได้ จนกว่าจะอนุมัติผลการแข่งขัน
+              </p>
+            </div>
+
+            <button
+              type="button"
+              disabled={isApproved || assignedJudges.length === 0 || activeRegs.length === 0}
+              onClick={handleSaveAllRows}
+              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold shadow-sm transition ${
+                isApproved || assignedJudges.length === 0 || activeRegs.length === 0
+                  ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                  : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:opacity-95 text-white cursor-pointer'
+              }`}
+            >
+              <Check className="w-4 h-4" />
+              <span>บันทึกผลคะแนนทั้งหมด</span>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 border-t border-slate-100">
+            <div>
+              <label className="block text-xs font-bold text-slate-600 mb-1">เลือกกิจกรรมการแข่งขัน</label>
+              <select
+                value={selectedComp.id}
+                onChange={(e) => {
+                  const nextComp = COMPETITIONS.find((c) => c.id === e.target.value) || COMPETITIONS[0];
+                  setScoreEntryCompId(nextComp.id);
+                  setScoreEntryLevel(nextComp.levels[0]);
+                  setScoreEntryRound('qualifying');
+                  setScoreEntryDraft({});
+                }}
+                className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm bg-slate-50 outline-none focus:border-emerald-500"
+              >
+                {COMPETITIONS.map((c, idx) => (
+                  <option key={c.id} value={c.id}>
+                    {idx + 1}. {c.name} ({c.type})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-600 mb-1">เลือกระดับชั้น</label>
+              <select
+                value={resolvedLevel}
+                onChange={(e) => {
+                  setScoreEntryLevel(e.target.value);
+                  setScoreEntryDraft({});
+                }}
+                className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm bg-slate-50 outline-none focus:border-emerald-500"
+              >
+                {selectedComp.levels.map((lvl) => (
+                  <option key={lvl} value={lvl}>
+                    {lvl}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {isTwoRound && (
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <span className="text-xs font-bold text-slate-600 mr-1">รอบการบันทึกคะแนน:</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setScoreEntryRound('qualifying');
+                  setScoreEntryDraft({});
+                }}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold border transition cursor-pointer ${
+                  scoreEntryRound === 'qualifying'
+                    ? 'bg-amber-500 text-white border-amber-500 shadow-xs'
+                    : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                }`}
+              >
+                รอบที่ 1: รอบคัดเลือก
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setScoreEntryRound('final');
+                  setScoreEntryDraft({});
+                }}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold border transition cursor-pointer ${
+                  scoreEntryRound === 'final'
+                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                    : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                }`}
+              >
+                รอบที่ 2: รอบตัดสิน (ลำดับ 1–10)
+              </button>
+            </div>
+          )}
+
+          {isApproved && (
+            <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-3 text-xs sm:text-sm font-bold text-emerald-800 flex items-center gap-2">
+              <Lock className="w-4 h-4 text-emerald-700 shrink-0" />
+              <span>ผู้ดูแลระบบอนุมัติผลการแข่งขันรายการนี้แล้ว ระบบล็อกการบันทึกและแก้ไขคะแนน</span>
+            </div>
+          )}
+
+          {currentMeta.judgeCompleted && !isApproved && (
+            <div className="rounded-xl bg-teal-50 border border-teal-200 px-4 py-3 text-xs font-bold text-teal-800 flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-teal-600 shrink-0" />
+              <span>
+                ประธานกรรมการแจ้งการตัดสินเสร็จสมบูรณ์แล้ว{currentMeta.judgeCompletedBy ? ` (โดย ${currentMeta.judgeCompletedBy})` : ''} — รอผู้ดูแลระบบอนุมัติผล
+              </span>
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-2xl bg-white p-5 shadow-sm border border-slate-100 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+            <div>
+              ทีมที่เข้าร่วมบันทึกคะแนน: <strong>{activeRegs.length}</strong> ทีม
+              {absentCount > 0 && (
+                <span className="ml-2 text-rose-600 font-semibold">(งดคิดคะแนน/ไม่เข้าร่วม {absentCount} ทีม)</span>
+              )}
+            </div>
+            <div>
+              กรรมการประจำกิจกรรม/ระดับนี้: <strong>{assignedJudges.length}</strong> ท่าน
+            </div>
+          </div>
+
+          {assignedJudges.length === 0 ? (
+            <div className="rounded-xl bg-amber-50 border border-amber-200 p-6 text-center text-sm text-amber-800 font-semibold">
+              ยังไม่มีรายชื่อกรรมการตัดสินในกิจกรรมและระดับชั้นนี้ กรุณาเพิ่มกรรมการที่เมนู "จัดการระบบ (Admin)" ก่อนบันทึกคะแนน
+            </div>
+          ) : activeRegs.length === 0 ? (
+            <div className="rounded-xl bg-slate-50 border border-slate-200 p-6 text-center text-sm text-slate-500">
+              ยังไม่มีทีมผู้เข้าแข่งขัน (หรือถูกแจ้งไม่เข้าร่วมทั้งหมด) ในกิจกรรมและระดับชั้นนี้
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs sm:text-sm">
+                <thead>
+                  <tr className="bg-slate-50 text-slate-700 border-b border-slate-200">
+                    <th className="py-3 px-3 w-12 text-center">ที่</th>
+                    <th className="py-3 px-3 min-w-[180px]">โรงเรียน / ผู้เข้าแข่งขัน</th>
+                    {assignedJudges.map((j, jIdx) => (
+                      <th key={j.id} className="py-3 px-2.5 min-w-[125px] text-center">
+                        <div className="font-bold text-slate-800">กรรมการ {jIdx + 1}</div>
+                        <div className="text-[11px] font-medium text-slate-500 truncate max-w-[130px] mx-auto" title={j.name}>
+                          {j.name}
+                        </div>
+                      </th>
+                    ))}
+                    <th className="py-3 px-3 w-24 text-center">คะแนนเฉลี่ย</th>
+                    <th className="py-3 px-3 w-28 text-right">บันทึก</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {activeRegs.map((reg, idx) => {
+                    const sch = schools.find((s) => s.id === reg.schoolId);
+                    const isCheckedIn = Boolean(checkIns[reg.id]?.checkedIn);
+                    const qRank = qualRankByRegId[reg.id];
+                    let validSum = 0;
+                    let validCount = 0;
+                    assignedJudges.forEach((j) => {
+                      if (recusedJudges[reg.id]?.[j.id]) return;
+                      const vStr = getDraftValue(reg.id, j.id).trim();
+                      if (vStr !== '') {
+                        const n = Number(vStr);
+                        if (Number.isFinite(n)) {
+                          validSum += n;
+                          validCount += 1;
+                        }
+                      }
+                    });
+                    const avgDisplay = validCount > 0 ? (validSum / validCount).toFixed(2) : '-';
+
+                    return (
+                      <tr key={reg.id} className="hover:bg-slate-50/70">
+                        <td className="py-3 px-3 text-center font-bold text-slate-700">{idx + 1}</td>
+                        <td className="py-3 px-3">
+                          <div className="font-bold text-slate-800 flex flex-wrap items-center gap-1.5">
+                            <span>{sch?.name || '-'}</span>
+                            {isCheckedIn ? (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">รายงานตัวแล้ว</span>
+                            ) : (
+                              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">ยังไม่รายงานตัว</span>
+                            )}
+                            {isTwoRound && qRank && (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">
+                                คัดเลือก #{qRank}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs text-slate-600 mt-0.5">
+                            {reg.students.map((st) => st.name).join(', ') || '-'}
+                          </div>
+                        </td>
+                        {assignedJudges.map((j) => {
+                          const isRecused = Boolean(recusedJudges[reg.id]?.[j.id]);
+                          return (
+                            <td key={j.id} className="py-3 px-2.5 text-center">
+                              {isRecused ? (
+                                <span className="inline-block rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-2 py-1 text-[11px] font-bold">
+                                  งดเว้น (โรงเรียนตน)
+                                </span>
+                              ) : (
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={100}
+                                  step="0.01"
+                                  disabled={isApproved}
+                                  value={getDraftValue(reg.id, j.id)}
+                                  onChange={(e) => setDraftCell(reg.id, j.id, e.target.value)}
+                                  placeholder="0-100"
+                                  className={`w-24 rounded-xl border px-2.5 py-1.5 text-center text-sm font-bold outline-none ${
+                                    isApproved
+                                      ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                                      : 'bg-white border-slate-200 focus:border-emerald-500'
+                                  }`}
+                                />
+                              )}
+                            </td>
+                          );
+                        })}
+                        <td className="py-3 px-3 text-center font-extrabold text-emerald-700 tabular-nums">
+                          {avgDisplay}
+                        </td>
+                        <td className="py-3 px-3 text-right">
+                          <button
+                            type="button"
+                            disabled={isApproved}
+                            onClick={() => handleSaveSingleRow(reg)}
+                            className={`inline-flex items-center gap-1 rounded-xl px-3 py-1.5 text-xs font-bold ${
+                              isApproved
+                                ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                                : 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
+                            }`}
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>บันทึก</span>
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </div>
     );
   };
@@ -10925,6 +11952,7 @@ export default function App() {
           position: adminJudgeForm.position.trim() || 'กรรมการตัดสิน',
           competitionId: adminJudgeForm.competitionId,
           level: adminJudgeForm.level,
+          schoolId: adminJudgeForm.schoolId || '',
           photoUrl: adminJudgeForm.photoUrl
         });
         setAdminJudgeForm({
@@ -10935,6 +11963,7 @@ export default function App() {
           position: 'กรรมการตัดสิน',
           competitionId: COMPETITIONS[0].id,
           level: COMPETITIONS[0].levels[0],
+          schoolId: '',
           photoUrl: ''
         });
         showToast(res.message || 'บันทึกข้อมูลกรรมการเรียบร้อยแล้ว');
@@ -10994,6 +12023,44 @@ export default function App() {
         showToast(res.message || 'ลบผู้จัดการแข่งขันเรียบร้อยแล้ว');
       } catch (err) {
         showToast(err instanceof Error ? err.message : 'ไม่สามารถลบผู้จัดการแข่งขันได้', 'error');
+      }
+    };
+
+    const handleSaveRegistrarAdmin = async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!adminRegistrarForm.username.trim() || !adminRegistrarForm.name.trim()) {
+        showToast('กรุณากรอก Username และชื่อ-นามสกุลเจ้าหน้าที่ลงทะเบียนให้ครบถ้วน', 'error');
+        return;
+      }
+      if (!adminRegistrarForm.id && adminRegistrarForm.password.trim().length < 4) {
+        showToast('กรุณากำหนดรหัสผ่านอย่างน้อย 4 ตัวอักษรสำหรับเจ้าหน้าที่ลงทะเบียนใหม่', 'error');
+        return;
+      }
+      if (adminRegistrarForm.id && adminRegistrarForm.password.trim() && adminRegistrarForm.password.trim().length < 4) {
+        showToast('รหัสผ่านใหม่ต้องมีอย่างน้อย 4 ตัวอักษร', 'error');
+        return;
+      }
+      try {
+        const res = await appApiCall('/admin/registrars/save', {
+          id: adminRegistrarForm.id || undefined,
+          username: adminRegistrarForm.username.trim(),
+          password: adminRegistrarForm.password.trim(),
+          name: adminRegistrarForm.name.trim(),
+          phone: adminRegistrarForm.phone.trim() || '-'
+        });
+        setAdminRegistrarForm({ id: null, username: '', password: '', name: '', phone: '' });
+        showToast(res.message || 'บันทึกข้อมูลเจ้าหน้าที่ลงทะเบียนเรียบร้อยแล้ว');
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถบันทึกข้อมูลเจ้าหน้าที่ลงทะเบียนได้', 'error');
+      }
+    };
+
+    const handleDeleteRegistrarAdmin = async (registrarId: string) => {
+      try {
+        const res = await appApiCall('/admin/registrars/delete', { id: registrarId });
+        showToast(res.message || 'ลบเจ้าหน้าที่ลงทะเบียนเรียบร้อยแล้ว');
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถลบเจ้าหน้าที่ลงทะเบียนได้', 'error');
       }
     };
 
@@ -11473,7 +12540,7 @@ export default function App() {
           </h3>
 
           <form onSubmit={handleSaveJudgeAdmin} className="space-y-3">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               <input
                 type="text"
                 placeholder="Username กรรมการ"
@@ -11532,6 +12599,19 @@ export default function App() {
                   </option>
                 ))}
               </select>
+              <select
+                value={adminJudgeForm.schoolId}
+                onChange={(e) => setAdminJudgeForm((p) => ({ ...p, schoolId: e.target.value }))}
+                className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-500"
+                title="ระบุสังกัดโรงเรียนของกรรมการ เพื่อรองรับการกดไม่ตัดสินลงคะแนนทีมโรงเรียนตนเอง"
+              >
+                <option value="">สังกัดโรงเรียน (ถ้ามี / ไม่ระบุ)</option>
+                {schools.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
               <div className="flex gap-2">
                 <button
                   type="submit"
@@ -11551,6 +12631,7 @@ export default function App() {
                         position: 'กรรมการตัดสิน',
                         competitionId: COMPETITIONS[0].id,
                         level: COMPETITIONS[0].levels[0],
+                        schoolId: '',
                         photoUrl: ''
                       })
                     }
@@ -11613,6 +12694,7 @@ export default function App() {
               <tbody className="divide-y divide-slate-100">
                 {judges.map((j) => {
                   const comp = COMPETITIONS.find((c) => c.id === j.competitionId);
+                  const judgeSchool = j.schoolId ? schools.find((s) => s.id === j.schoolId) : undefined;
                   return (
                     <tr key={j.id}>
                       <td className="py-2.5 px-3 font-mono text-xs">
@@ -11627,7 +12709,14 @@ export default function App() {
                               className="w-7 h-7 rounded-full object-cover object-top border border-sky-200 shrink-0"
                             />
                           )}
-                          <span>{j.name}</span>
+                          <div>
+                            <div>{j.name}</div>
+                            {judgeSchool && (
+                              <div className="text-[11px] font-medium text-emerald-700">
+                                สังกัด: {judgeSchool.name}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </td>
                       <td className="py-2.5 px-3 text-xs font-bold text-indigo-700">{j.position}</td>
@@ -11636,7 +12725,7 @@ export default function App() {
                       <td className="py-2.5 px-3 text-right space-x-1">
                         <button
                           type="button"
-                          onClick={() => setAdminJudgeForm({ ...j, password: '' })}
+                          onClick={() => setAdminJudgeForm({ ...j, schoolId: j.schoolId || '', password: '' })}
                           className="p-1.5 rounded-lg bg-sky-50 text-sky-600 hover:bg-sky-100 cursor-pointer"
                         >
                           <Edit3 className="w-4 h-4" />
@@ -11657,7 +12746,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* 3.5 จัดการบัญชีผู้จัดการแข่งขัน (เข้าใช้ได้เฉพาะเมนู การจัดการแข่งขัน) */}
+        {/* 3.5 จัดการบัญชีผู้จัดการแข่งขัน */}
         <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div>
@@ -11666,7 +12755,7 @@ export default function App() {
                 <span>จัดการบัญชีผู้จัดการแข่งขัน ({managers.length} ท่าน)</span>
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                ผู้จัดการแข่งขันสามารถเข้าใช้งานได้เฉพาะเมนู &quot;การจัดการแข่งขัน&quot; (พิมพ์ใบลงทะเบียน/ใบคะแนน และตั้งค่าเกณฑ์) เท่านั้น
+                ผู้จัดการแข่งขันสามารถเข้าใช้งานการจัดการแข่งขัน ลงทะเบียนเข้าร่วมแข่งขัน บันทึกผลคะแนน ประกาศผล และเอกสารต่าง ๆ ได้ (ก่อนผู้ดูแลระบบอนุมัติ)
               </p>
             </div>
           </div>
@@ -11747,7 +12836,7 @@ export default function App() {
                       <td className="py-2.5 px-3 text-xs text-slate-600">{m.phone || '-'}</td>
                       <td className="py-2.5 px-3">
                         <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-violet-100 text-violet-700">
-                          เฉพาะเมนู การจัดการแข่งขัน
+                          จัดการแข่งขัน / บันทึกผลคะแนน / รายงานตัว
                         </span>
                       </td>
                       <td className="py-2.5 px-3 text-right space-x-1">
@@ -11761,6 +12850,123 @@ export default function App() {
                         <button
                           type="button"
                           onClick={() => void handleDeleteManagerAdmin(m.id)}
+                          className="p-1.5 rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-100 cursor-pointer"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* 3.6 จัดการบัญชีเจ้าหน้าที่ลงทะเบียน (เข้าใช้ได้เฉพาะเมนู ลงทะเบียนเข้าร่วมแข่งขัน) */}
+        <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                <ClipboardCheck className="w-5 h-5 text-indigo-600" />
+                <span>จัดการบัญชีเจ้าหน้าที่ลงทะเบียน ({registrars.length} ท่าน)</span>
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                เจ้าหน้าที่ลงทะเบียนสามารถเข้าใช้งานเมนู &quot;ลงทะเบียนเข้าร่วมแข่งขัน&quot; เพื่อเช็กชื่อรายงานตัว แจ้งไม่เข้าร่วม เพิ่ม/แก้ไขข้อมูลผู้เข้าแข่งขันได้
+              </p>
+            </div>
+          </div>
+
+          <form onSubmit={handleSaveRegistrarAdmin} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+            <input
+              type="text"
+              required
+              placeholder="Username *"
+              value={adminRegistrarForm.username}
+              onChange={(e) => setAdminRegistrarForm((p) => ({ ...p, username: e.target.value }))}
+              className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-500"
+            />
+            <input
+              type="password"
+              placeholder={adminRegistrarForm.id ? 'Password ใหม่ (เว้นว่างถ้าไม่เปลี่ยน)' : 'Password (อย่างน้อย 4 ตัว) *'}
+              value={adminRegistrarForm.password}
+              onChange={(e) => setAdminRegistrarForm((p) => ({ ...p, password: e.target.value }))}
+              className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-500"
+            />
+            <input
+              type="text"
+              required
+              placeholder="ชื่อ-นามสกุลเจ้าหน้าที่ลงทะเบียน *"
+              value={adminRegistrarForm.name}
+              onChange={(e) => setAdminRegistrarForm((p) => ({ ...p, name: e.target.value }))}
+              className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-500"
+            />
+            <input
+              type="text"
+              placeholder="เบอร์โทรติดต่อ"
+              value={adminRegistrarForm.phone}
+              onChange={(e) => setAdminRegistrarForm((p) => ({ ...p, phone: e.target.value }))}
+              className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-500"
+            />
+            <div className="flex gap-2">
+              <button
+                type="submit"
+                className="flex-1 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm py-2 px-3 cursor-pointer"
+              >
+                {adminRegistrarForm.id ? 'บันทึกแก้ไข' : '+ เพิ่มเจ้าหน้าที่ลงทะเบียน'}
+              </button>
+              {adminRegistrarForm.id && (
+                <button
+                  type="button"
+                  onClick={() => setAdminRegistrarForm({ id: null, username: '', password: '', name: '', phone: '' })}
+                  className="rounded-xl bg-slate-100 text-slate-600 px-2.5 text-xs font-bold cursor-pointer"
+                >
+                  ยกเลิก
+                </button>
+              )}
+            </div>
+          </form>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-sm">
+              <thead>
+                <tr className="bg-slate-50 text-slate-600 text-xs border-b border-slate-100">
+                  <th className="py-2.5 px-3">Username</th>
+                  <th className="py-2.5 px-3">ชื่อ-นามสกุล</th>
+                  <th className="py-2.5 px-3">เบอร์ติดต่อ</th>
+                  <th className="py-2.5 px-3">สิทธิ์การใช้งาน</th>
+                  <th className="py-2.5 px-3 text-right">จัดการ</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {registrars.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="py-5 text-center text-xs text-slate-400">
+                      ยังไม่มีเจ้าหน้าที่ลงทะเบียนในระบบ (เพิ่มได้ที่แบบฟอร์มด้านบน)
+                    </td>
+                  </tr>
+                ) : (
+                  registrars.map((regAcc) => (
+                    <tr key={regAcc.id}>
+                      <td className="py-2.5 px-3 font-mono text-xs font-bold text-slate-800">{regAcc.username}</td>
+                      <td className="py-2.5 px-3 font-semibold text-slate-800">{regAcc.name}</td>
+                      <td className="py-2.5 px-3 text-xs text-slate-600">{regAcc.phone || '-'}</td>
+                      <td className="py-2.5 px-3">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-indigo-100 text-indigo-700">
+                          เฉพาะลงทะเบียนเข้าร่วมแข่งขัน
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 text-right space-x-1">
+                        <button
+                          type="button"
+                          onClick={() => setAdminRegistrarForm({ ...regAcc, password: '' })}
+                          className="p-1.5 rounded-lg bg-indigo-50 text-indigo-600 hover:bg-indigo-100 cursor-pointer"
+                        >
+                          <Edit3 className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleDeleteRegistrarAdmin(regAcc.id)}
                           className="p-1.5 rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-100 cursor-pointer"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -11932,7 +13138,7 @@ export default function App() {
             <div className="rounded-xl border border-teal-200 bg-teal-50/50 p-3">
               <div className="text-xs text-teal-800">ชุดข้อมูลในระบบ</div>
               <div className="text-xs font-bold text-teal-900 mt-1 leading-relaxed">
-                รร. {storageStats?.collections?.schools ?? schools.length} • ทีม {storageStats?.collections?.registrations ?? registrations.length} • กรรมการ {storageStats?.collections?.judges ?? judges.length}
+                รร. {storageStats?.collections?.schools ?? schools.length} • ทีม {storageStats?.collections?.registrations ?? registrations.length} • กรรมการ {storageStats?.collections?.judges ?? judges.length} • จนท.ลงทะเบียน {storageStats?.collections?.registrars ?? registrars.length}
               </div>
             </div>
           </div>
@@ -11957,6 +13163,9 @@ export default function App() {
     const assignedComp = COMPETITIONS.find((c) => c.id === currentJudge.competitionId);
     const metaKey = `${currentJudge.competitionId}__${currentJudge.level}`;
     const isApprovedByAdmin = Boolean(evalMeta[metaKey]?.approved);
+    const isJudgeCompleted = Boolean(evalMeta[metaKey]?.judgeCompleted);
+    const isChairman =
+      currentJudge.position.includes('ประธาน') && !currentJudge.position.includes('รองประธาน');
     const criteriaList = isDharmaQuiz
       ? [{ key: 'correctAnswers', label: 'จำนวนข้อสอบที่ตอบถูกต้อง (ลงคะแนนตามข้อที่ตอบถูก)', max: 100, maxLabel: '100 ข้อ/คะแนน' }]
       : getCompetitionCriteria(currentJudge.competitionId, customCriteriaByComp);
@@ -12198,17 +13407,77 @@ export default function App() {
       }
     };
 
+    const handleToggleRecuseTeam = async (regItem: RegistrationItem) => {
+      if (isApprovedByAdmin) {
+        showToast('ผู้ดูแลระบบอนุมัติผลการแข่งขันแล้ว ไม่สามารถเปลี่ยนแปลงการงดเว้นลงคะแนนได้', 'error');
+        return;
+      }
+      if (absentRegs[regItem.id]) {
+        showToast('ทีมนี้ถูกแจ้งไม่เข้าร่วมแข่งขันแล้ว', 'error');
+        return;
+      }
+      const currentlyRecused = Boolean(recusedJudges[regItem.id]?.[currentJudge.id]);
+      const nextRecused = !currentlyRecused;
+      const teamSchool = schools.find((s) => s.id === regItem.schoolId);
+      const teamLabel =
+        regItem.students.map((s) => s.name).join(', ') || teamSchool?.name || 'ทีมผู้เข้าแข่งขัน';
+
+      try {
+        await appApiCall('/judge/recuse', { registrationId: regItem.id, recused: nextRecused });
+        if (nextRecused) {
+          setDraftCriteriaScores((prev) => {
+            const emptyRow: Record<string, number | ''> = {};
+            criteriaList.forEach((c) => {
+              emptyRow[c.key] = '';
+            });
+            return { ...prev, [regItem.id]: emptyRow };
+          });
+          setUnlockedScoreCards((prev) => {
+            if (!prev[regItem.id]) return prev;
+            const next = { ...prev };
+            delete next[regItem.id];
+            return next;
+          });
+          showToast(`งดเว้นไม่ตัดสินลงคะแนนให้ "${teamLabel}" เรียบร้อยแล้ว (ระบบจะไม่นำคะแนนของท่านไปคิดคำนวณในทีมนี้)`);
+        } else {
+          showToast(`ยกเลิกงดเว้นการตัดสิน "${teamLabel}" แล้ว สามารถลงคะแนนได้ตามปกติ`);
+        }
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถเปลี่ยนสถานะงดเว้นลงคะแนนได้', 'error');
+      }
+    };
+
+    const handleToggleChairmanComplete = async () => {
+      if (!isChairman) return;
+      if (isApprovedByAdmin) {
+        showToast('ผู้ดูแลระบบอนุมัติผลการแข่งขันรายการนี้แล้ว', 'error');
+        return;
+      }
+      const nextCompleted = !isJudgeCompleted;
+      try {
+        const res = await appApiCall('/judge/complete', { completed: nextCompleted });
+        showToast(
+          res.message ||
+            (nextCompleted
+              ? 'แจ้งผลการตัดสินเสร็จสมบูรณ์ทุกโรงเรียนไปยังผู้ดูแลระบบเรียบร้อยแล้ว'
+              : 'ยกเลิกการแจ้งเสร็จสมบูรณ์เรียบร้อยแล้ว')
+        );
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'ไม่สามารถส่งแจ้งสถานะการตัดสินได้', 'error');
+      }
+    };
+
     const qualScoredCount = isTwoRound
       ? assignedRegs.filter((r) => {
           const hasRoundStore = Boolean(roundScores[r.id] || roundScoreCriteriaDetails[r.id]);
           const val = roundScores[r.id]?.qualifying?.[currentJudge.id] ?? (!hasRoundStore ? scores[r.id]?.[currentJudge.id] : undefined);
-          return !absentRegs[r.id] && val !== undefined && val !== null;
+          return !absentRegs[r.id] && !recusedJudges[r.id]?.[currentJudge.id] && val !== undefined && val !== null;
         }).length
       : 0;
     const finalScoredCount = isTwoRound
       ? assignedRegs.filter((r) => {
           const val = roundScores[r.id]?.final?.[currentJudge.id];
-          return !absentRegs[r.id] && val !== undefined && val !== null;
+          return !absentRegs[r.id] && !recusedJudges[r.id]?.[currentJudge.id] && val !== undefined && val !== null;
         }).length
       : 0;
 
@@ -12219,7 +13488,8 @@ export default function App() {
           registrations,
           scores,
           roundScores,
-          absentRegs
+          absentRegs,
+          recusedJudges
         )
       : [];
     const qualRankByRegId: Record<string, number> = {};
@@ -12249,9 +13519,19 @@ export default function App() {
                 ? 'ระบบลงคะแนน 2 รอบ (รอบคัดเลือก & รอบตัดสิน)'
                 : 'ระบบลงคะแนนสำหรับกรรมการตัดสิน (ตามเกณฑ์ใบลงคะแนน 100 คะแนน)'}
             </div>
-            <h2 className="text-xl sm:text-2xl font-bold mt-1">{currentJudge.name}</h2>
+            <h2 className="text-xl sm:text-2xl font-bold mt-1">
+              {currentJudge.name}
+              <span className="ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-white/20 text-white">
+                {currentJudge.position}
+              </span>
+            </h2>
             <p className="text-sm text-sky-100 mt-1">
               รายการที่รับผิดชอบ: <strong>{assignedComp?.name}</strong> • ระดับ: <strong>{currentJudge.level}</strong>
+              {currentJudge.schoolId && (
+                <>
+                  {' '}• สังกัด: <strong>{schools.find((s) => s.id === currentJudge.schoolId)?.name || '-'}</strong>
+                </>
+              )}
             </p>
             <p className="text-xs text-sky-200 mt-2">
               {isApprovedByAdmin
@@ -12260,18 +13540,50 @@ export default function App() {
                 ? 'กรอกจำนวนข้อสอบที่ผู้เข้าแข่งขันตอบถูกต้อง หรือแจ้งไม่เข้าร่วมแข่งขันหากไม่ปรากฏผู้เข้าแข่งขัน'
                 : isTwoRound
                 ? 'รอบตัดสินคัดเลือกอันดับที่ 1–10 จากรอบคัดเลือก และประกาศผลรวมโดยนำรอบตัดสิน 1–10 ต่อท้ายด้วยรอบคัดเลือกที่ไม่เข้าเกณฑ์ 1–10'
-                : 'กรอกคะแนนแยกตามเกณฑ์ในใบลงคะแนน หรือกดปุ่ม "แจ้งไม่เข้าร่วมแข่งขัน" หากไม่ปรากฏผู้เข้าแข่งขัน (งดออกเกียรติบัตรอัตโนมัติ)'}
+                : 'กรอกคะแนนแยกตามเกณฑ์ในใบลงคะแนน หรือกดปุ่ม "ไม่ตัดสินลงคะแนน" หากเป็นทีมโรงเรียนของตน'}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => handleSelectMenu('judge-absent')}
-            className="self-start sm:self-center inline-flex items-center gap-2 rounded-xl bg-white/15 hover:bg-white/25 border border-white/30 text-white px-4 py-2.5 text-xs sm:text-sm font-bold backdrop-blur-sm transition cursor-pointer shrink-0"
-          >
-            <UserX className="w-4 h-4" />
-            <span>ไปที่เมนูแจ้งไม่เข้าร่วมแข่งขัน</span>
-          </button>
+          <div className="flex flex-col sm:items-end gap-2 shrink-0">
+            {isChairman && (
+              <button
+                type="button"
+                disabled={isApprovedByAdmin}
+                onClick={() => void handleToggleChairmanComplete()}
+                className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs sm:text-sm font-bold shadow-sm transition ${
+                  isApprovedByAdmin
+                    ? 'bg-white/10 text-white/60 border border-white/20 cursor-not-allowed'
+                    : isJudgeCompleted
+                    ? 'bg-emerald-500 hover:bg-emerald-600 text-white border border-emerald-300 cursor-pointer'
+                    : 'bg-amber-400 hover:bg-amber-300 text-slate-900 border border-amber-200 cursor-pointer'
+                }`}
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>
+                  {isJudgeCompleted
+                    ? 'แจ้งเสร็จสมบูรณ์แล้ว (คลิกยกเลิก)'
+                    : 'แจ้งการตัดสินว่าเสร็จสมบูรณ์ทุกโรงเรียน'}
+                </span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => handleSelectMenu('judge-absent')}
+              className="self-start sm:self-end inline-flex items-center gap-2 rounded-xl bg-white/15 hover:bg-white/25 border border-white/30 text-white px-4 py-2 text-xs font-bold backdrop-blur-sm transition cursor-pointer"
+            >
+              <UserX className="w-4 h-4" />
+              <span>ไปที่เมนูแจ้งไม่เข้าร่วมแข่งขัน</span>
+            </button>
+          </div>
         </div>
+
+        {isJudgeCompleted && !isApprovedByAdmin && (
+          <div className="rounded-2xl bg-emerald-50 border border-emerald-200 p-4 flex items-center gap-3 text-emerald-800 text-xs sm:text-sm font-bold">
+            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+            <span>
+              ประธานกรรมการตัดสินได้แจ้งการตัดสินเสร็จสมบูรณ์ทุกโรงเรียนไปยังผู้ดูแลระบบแล้ว (รอผู้ดูแลระบบตรวจสอบและอนุมัติผลคะแนน)
+            </span>
+          </div>
+        )}
 
         {isTwoRound && (
           <div className="rounded-2xl bg-white p-4 sm:p-5 border border-amber-200 shadow-sm space-y-3">
@@ -12341,6 +13653,9 @@ export default function App() {
               {orderedAssignedRegs.map((r, idx) => {
                 const sch = schools.find((s) => s.id === r.schoolId);
                 const isAbsent = Boolean(absentRegs[r.id]);
+                const isCheckedIn = Boolean(checkIns[r.id]?.checkedIn);
+                const isRecused = Boolean(recusedJudges[r.id]?.[currentJudge.id]);
+                const isOwnSchool = Boolean(currentJudge.schoolId && r.schoolId === currentJudge.schoolId);
                 const qRank = qualRankByRegId[r.id] ?? null;
                 const isTop10Qual = qRank !== null && qRank <= 10;
                 const { total, hasAny } = computeRowTotal(r.id);
@@ -12351,6 +13666,7 @@ export default function App() {
                   : scores[r.id]?.[currentJudge.id];
                 const hasSavedScore =
                   !isAbsent &&
+                  !isRecused &&
                   savedRoundScore !== undefined &&
                   savedRoundScore !== null;
                 const qualSavedByJudge = isTwoRound
@@ -12362,7 +13678,7 @@ export default function App() {
                   : undefined;
                 const isEditingRow = Boolean(unlockedScoreCards[r.id]) && !isApprovedByAdmin;
                 const isInputDisabled =
-                  isApprovedByAdmin || isAbsent || (hasSavedScore && !isEditingRow);
+                  isApprovedByAdmin || isAbsent || isRecused || (hasSavedScore && !isEditingRow);
 
                 return (
                   <div
@@ -12370,6 +13686,10 @@ export default function App() {
                     className={`p-4 sm:p-5 rounded-2xl border space-y-4 ${
                       isAbsent
                         ? 'border-rose-200 bg-rose-50/40'
+                        : isRecused
+                        ? 'border-amber-300 bg-amber-50/50'
+                        : isOwnSchool
+                        ? 'border-emerald-300 bg-emerald-50/25'
                         : isTwoRound && judgeScoringRound === 'final' && qRank !== null && !isTop10Qual
                         ? 'border-amber-200/80 bg-amber-50/30 opacity-85'
                         : 'border-slate-200 bg-slate-50/50'
@@ -12379,6 +13699,27 @@ export default function App() {
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="text-xs font-bold text-sky-700">ผู้เข้าแข่งขันชุดที่ {idx + 1}</span>
+                          {!isAbsent && (
+                            <span
+                              className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
+                                isCheckedIn
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                  : 'bg-slate-100 text-slate-600 border-slate-200'
+                              }`}
+                            >
+                              {isCheckedIn ? 'ลงทะเบียนรายงานตัวแล้ว' : 'ยังไม่รายงานตัว'}
+                            </span>
+                          )}
+                          {isOwnSchool && (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                              โรงเรียนเดียวกับกรรมการ
+                            </span>
+                          )}
+                          {isRecused && (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-600 text-white">
+                              งดเว้นลงคะแนน (ทีมโรงเรียนของตน)
+                            </span>
+                          )}
                           {isTwoRound && (
                             <span className="inline-flex items-center rounded-full bg-amber-100 text-amber-800 px-2.5 py-0.5 text-[11px] font-bold">
                               {activeRoundLabel}
@@ -12436,16 +13777,20 @@ export default function App() {
                         className={`rounded-xl border px-4 py-2 text-right shrink-0 ${
                           isAbsent
                             ? 'bg-rose-50 border-rose-200'
+                            : isRecused
+                            ? 'bg-amber-50 border-amber-200'
                             : 'bg-sky-50 border-sky-200'
                         }`}
                       >
                         <div
                           className={`text-[11px] font-semibold ${
-                            isAbsent ? 'text-rose-700' : 'text-sky-800'
+                            isAbsent ? 'text-rose-700' : isRecused ? 'text-amber-800' : 'text-sky-800'
                           }`}
                         >
                           {isAbsent
                             ? 'สถานะการเข้าแข่งขัน'
+                            : isRecused
+                            ? 'สถานะการตัดสินของท่าน'
                             : isDharmaQuiz
                             ? 'คะแนนตามข้อที่ตอบถูก'
                             : isTwoRound
@@ -12454,11 +13799,13 @@ export default function App() {
                         </div>
                         <div
                           className={`text-lg font-extrabold ${
-                            isAbsent ? 'text-rose-700' : 'text-sky-900'
+                            isAbsent ? 'text-rose-700' : isRecused ? 'text-amber-900' : 'text-sky-900'
                           }`}
                         >
                           {isAbsent
                             ? 'ไม่เข้าร่วมแข่งขัน'
+                            : isRecused
+                            ? 'ไม่ตัดสิน (งดเว้น)'
                             : hasAny
                             ? `${total} ${isDharmaQuiz ? 'ข้อ/คะแนน' : 'คะแนน'}`
                             : '-'}
@@ -12466,7 +13813,13 @@ export default function App() {
                       </div>
                     </div>
 
-                    {!isAbsent && (
+                    {!isAbsent && isRecused && (
+                      <div className="rounded-xl bg-amber-100/70 border border-amber-200 px-4 py-3 text-xs sm:text-sm font-semibold text-amber-900">
+                        ท่านเลือก &quot;ไม่ตัดสินลงคะแนน (ทีมโรงเรียนของตน)&quot; ระบบจะไม่นำคะแนนของท่านไปคิดคำนวณรวมสำหรับทีมนี้ (ใช้คะแนนจากกรรมการท่านอื่นแทน)
+                      </div>
+                    )}
+
+                    {!isAbsent && !isRecused && (
                       <div className={isDharmaQuiz ? 'grid grid-cols-1 gap-3' : 'grid grid-cols-1 md:grid-cols-2 gap-3'}>
                         {criteriaList.map((crit) => {
                           const currentVal = draftCriteriaScores[r.id]?.[crit.key] ?? '';
@@ -12505,32 +13858,56 @@ export default function App() {
                     )}
 
                     <div className="flex flex-wrap justify-between items-center gap-2 pt-1">
-                      <button
-                        type="button"
-                        disabled={isApprovedByAdmin}
-                        onClick={() => handleToggleAbsentTeam(r)}
-                        className={`inline-flex items-center gap-1.5 rounded-xl font-bold px-3.5 py-2 text-xs sm:text-sm border transition ${
-                          isApprovedByAdmin
-                            ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
-                            : isAbsent
-                            ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-300 cursor-pointer'
-                            : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-300 cursor-pointer'
-                        }`}
-                      >
-                        {isAbsent ? (
-                          <>
-                            <CheckCircle2 className="w-4 h-4" />
-                            <span>ยกเลิกแจ้งไม่เข้าร่วม (กลับมาแข่งขัน)</span>
-                          </>
-                        ) : (
-                          <>
-                            <UserX className="w-4 h-4" />
-                            <span>แจ้งไม่เข้าร่วมแข่งขัน</span>
-                          </>
-                        )}
-                      </button>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={isApprovedByAdmin}
+                          onClick={() => handleToggleAbsentTeam(r)}
+                          className={`inline-flex items-center gap-1.5 rounded-xl font-bold px-3.5 py-2 text-xs sm:text-sm border transition ${
+                            isApprovedByAdmin
+                              ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                              : isAbsent
+                              ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-300 cursor-pointer'
+                              : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-300 cursor-pointer'
+                          }`}
+                        >
+                          {isAbsent ? (
+                            <>
+                              <CheckCircle2 className="w-4 h-4" />
+                              <span>ยกเลิกแจ้งไม่เข้าร่วม (กลับมาแข่งขัน)</span>
+                            </>
+                          ) : (
+                            <>
+                              <UserX className="w-4 h-4" />
+                              <span>แจ้งไม่เข้าร่วมแข่งขัน</span>
+                            </>
+                          )}
+                        </button>
 
-                      {!isAbsent && (
+                        {!isAbsent && (
+                          <button
+                            type="button"
+                            disabled={isApprovedByAdmin}
+                            onClick={() => void handleToggleRecuseTeam(r)}
+                            className={`inline-flex items-center gap-1.5 rounded-xl font-bold px-3.5 py-2 text-xs sm:text-sm border transition ${
+                              isApprovedByAdmin
+                                ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                                : isRecused
+                                ? 'bg-amber-600 hover:bg-amber-700 text-white border-amber-700 cursor-pointer'
+                                : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300 cursor-pointer'
+                            }`}
+                          >
+                            <ShieldCheck className="w-4 h-4" />
+                            <span>
+                              {isRecused
+                                ? 'ยกเลิกไม่ตัดสินลงคะแนน'
+                                : 'ไม่ตัดสินลงคะแนน (ทีมโรงเรียนของตน)'}
+                            </span>
+                          </button>
+                        )}
+                      </div>
+
+                      {!isAbsent && !isRecused && (
                         <div className="flex flex-wrap justify-end gap-2">
                           {hasSavedScore && !isEditingRow ? (
                             <button
@@ -12831,17 +14208,21 @@ export default function App() {
         ? 'admin-manage'
         : authSession.role === 'manager'
         ? 'admin-competition-manage'
+        : authSession.role === 'registrar'
+        ? 'competition-checkin'
         : authSession.role === 'school'
         ? 'by-school'
         : authSession.role === 'judge'
         ? 'judge-scoring'
         : 'home';
 
-    const activeRoleTab: 'admin' | 'manager' | 'school' | 'judge' =
+    const activeRoleTab: 'admin' | 'manager' | 'registrar' | 'school' | 'judge' =
       activeMenu === 'login-admin'
         ? 'admin'
         : activeMenu === 'login-manager'
         ? 'manager'
+        : activeMenu === 'login-registrar'
+        ? 'registrar'
         : activeMenu === 'login-judge'
         ? 'judge'
         : activeMenu === 'login-school'
@@ -12859,9 +14240,16 @@ export default function App() {
         : activeRoleTab === 'manager'
         ? {
             title: 'เข้าสู่ระบบ: ผู้จัดการแข่งขัน',
-            desc: 'สำหรับผู้จัดการแข่งขันในการจัดการเอกสารลงทะเบียน ใบบันทึกคะแนน และเกณฑ์การตัดสิน',
+            desc: 'สำหรับผู้จัดการแข่งขันในการจัดการเอกสาร บันทึกผลคะแนน เกณฑ์การตัดสิน และลงทะเบียนเข้าร่วมแข่งขัน',
             icon: FileText,
             badgeCls: 'bg-violet-100 text-violet-700'
+          }
+        : activeRoleTab === 'registrar'
+        ? {
+            title: 'เข้าสู่ระบบ: เจ้าหน้าที่ลงทะเบียน',
+            desc: 'สำหรับเจ้าหน้าที่ลงทะเบียนเพื่อบันทึกการรายงานตัว แจ้งไม่เข้าร่วม และจัดการรายชื่อผู้เข้าแข่งขัน',
+            icon: ClipboardCheck,
+            badgeCls: 'bg-indigo-100 text-indigo-700'
           }
         : activeRoleTab === 'judge'
         ? {
@@ -12880,7 +14268,7 @@ export default function App() {
     const RoleHeaderIcon = currentRoleMeta.icon;
 
     return (
-      <div className={`${activeMenu === 'login' ? 'max-w-4xl' : 'max-w-2xl'} mx-auto space-y-6`}>
+      <div className={`${activeMenu === 'login' ? 'max-w-5xl' : 'max-w-2xl'} mx-auto space-y-6`}>
         {authSession.role !== 'guest' && (
           <div className="rounded-2xl bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
             <div className="flex items-center gap-3 min-w-0">
@@ -12889,7 +14277,7 @@ export default function App() {
               </div>
               <div className="min-w-0">
                 <div className="text-xs font-bold text-emerald-700">
-                  เข้าสู่ระบบอยู่แล้ว ({authSession.role === 'admin' ? 'ผู้ดูแลระบบ' : authSession.role === 'manager' ? 'ผู้จัดการแข่งขัน' : authSession.role === 'school' ? 'โรงเรียน' : 'กรรมการตัดสิน'})
+                  เข้าสู่ระบบอยู่แล้ว ({authSession.role === 'admin' ? 'ผู้ดูแลระบบ' : authSession.role === 'manager' ? 'ผู้จัดการแข่งขัน' : authSession.role === 'registrar' ? 'เจ้าหน้าที่ลงทะเบียน' : authSession.role === 'school' ? 'โรงเรียน' : 'กรรมการตัดสิน'})
                 </div>
                 <div className="text-sm font-bold text-slate-800 truncate">{authSession.displayName}</div>
               </div>
@@ -12925,7 +14313,7 @@ export default function App() {
               </p>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
               <button
                 type="button"
                 onClick={() => handleSelectMenu('login-admin')}
@@ -12954,9 +14342,27 @@ export default function App() {
                 </div>
                 <div>
                   <div className="text-base font-bold text-slate-800">ผู้จัดการแข่งขัน</div>
-                  <div className="text-xs text-slate-500 mt-1">จัดการเอกสารและเกณฑ์การให้คะแนนแข่งขัน</div>
+                  <div className="text-xs text-slate-500 mt-1">จัดการแข่งขัน บันทึกคะแนน และเกณฑ์ตัดสิน</div>
                 </div>
                 <span className="mt-auto inline-flex items-center gap-1 text-xs font-bold text-violet-700">
+                  <span>เข้าสู่ระบบ</span>
+                  <ChevronRight className="w-4 h-4" />
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleSelectMenu('login-registrar')}
+                className="group rounded-2xl border border-slate-200 hover:border-indigo-400 hover:bg-indigo-50/40 p-5 text-center transition shadow-xs hover:shadow-md cursor-pointer flex flex-col items-center gap-3"
+              >
+                <div className="w-14 h-14 rounded-2xl bg-indigo-100 text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white flex items-center justify-center transition">
+                  <ClipboardCheck className="w-7 h-7" />
+                </div>
+                <div>
+                  <div className="text-base font-bold text-slate-800">เจ้าหน้าที่ลงทะเบียน</div>
+                  <div className="text-xs text-slate-500 mt-1">เช็กชื่อลงทะเบียนเข้าร่วมแข่งขันหน้างาน</div>
+                </div>
+                <span className="mt-auto inline-flex items-center gap-1 text-xs font-bold text-indigo-700">
                   <span>เข้าสู่ระบบ</span>
                   <ChevronRight className="w-4 h-4" />
                 </span>
@@ -13415,6 +14821,65 @@ export default function App() {
               </button>
             </form>
           )}
+
+          {/* Tab 5: Registrar */}
+          {activeRoleTab === 'registrar' && (
+            <form onSubmit={handleLoginSubmit} className="mt-5 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">Username เจ้าหน้าที่ลงทะเบียน</label>
+                <input
+                  type="text"
+                  autoComplete="username"
+                  value={loginUser}
+                  onChange={(e) => {
+                    setLoginUser(e.target.value);
+                    if (loginError) setLoginError('');
+                  }}
+                  placeholder="ระบุชื่อผู้ใช้เจ้าหน้าที่ลงทะเบียน"
+                  className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm outline-none focus:border-indigo-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">รหัสผ่าน</label>
+                <div className="relative">
+                  <input
+                    type={showLoginPass ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    value={loginPass}
+                    onChange={(e) => {
+                      setLoginPass(e.target.value);
+                      if (loginError) setLoginError('');
+                    }}
+                    placeholder="••••••••"
+                    className="w-full rounded-xl border border-slate-200 pl-3.5 pr-10 py-2.5 text-sm outline-none focus:border-indigo-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowLoginPass((v) => !v)}
+                    aria-label={showLoginPass ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'}
+                    className="absolute inset-y-0 right-2.5 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
+                  >
+                    {showLoginPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+              <label className="inline-flex items-center gap-2 text-xs text-slate-600 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={rememberLogin}
+                  onChange={(e) => setRememberLogin(e.target.checked)}
+                  className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                />
+                <span>จดจำการเข้าสู่ระบบในเบราว์เซอร์นี้</span>
+              </label>
+              <button
+                type="submit"
+                className="w-full rounded-xl bg-gradient-to-r from-indigo-600 to-blue-600 hover:opacity-95 text-white font-bold py-3 text-sm shadow-md cursor-pointer"
+              >
+                เข้าสู่ระบบเจ้าหน้าที่ลงทะเบียน
+              </button>
+            </form>
+          )}
         </div>
         )}
       </div>
@@ -13428,6 +14893,9 @@ export default function App() {
   const renderActiveContent = () => {
     if (authSession.role === 'manager' && !MANAGER_ALLOWED_MENUS.includes(activeMenu) && !activeMenu.startsWith('login')) {
       return renderAdminCompetitionManagePage();
+    }
+    if (authSession.role === 'registrar' && !REGISTRAR_ALLOWED_MENUS.includes(activeMenu) && !activeMenu.startsWith('login')) {
+      return renderCompetitionCheckinPage();
     }
     switch (activeMenu) {
       case 'home':
@@ -13457,6 +14925,10 @@ export default function App() {
         return renderSchoolResultsPage();
       case 'results':
         return renderResultsPage();
+      case 'competition-checkin':
+        return renderCompetitionCheckinPage();
+      case 'score-entry':
+        return renderScoreEntryPage();
       case 'admin-competition-manage':
         return renderAdminCompetitionManagePage();
       case 'admin-manage':
@@ -13468,6 +14940,7 @@ export default function App() {
       case 'login':
       case 'login-admin':
       case 'login-manager':
+      case 'login-registrar':
       case 'login-school':
       case 'login-judge':
         return renderLoginPage();
@@ -14178,6 +15651,14 @@ export default function App() {
                     </button>
                     <button
                       type="button"
+                      onClick={() => handleSelectMenu('login-registrar')}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold hover:bg-indigo-50 hover:text-indigo-700 transition text-left cursor-pointer"
+                    >
+                      <ClipboardCheck className="w-4 h-4 text-indigo-600 shrink-0" />
+                      <span>เจ้าหน้าที่ลงทะเบียน</span>
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => handleSelectMenu('login-school')}
                       className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold hover:bg-emerald-50 hover:text-emerald-700 transition text-left cursor-pointer"
                     >
@@ -14212,7 +15693,7 @@ export default function App() {
           <div>
             <div className="flex items-center justify-between gap-2 px-3 mb-2">
               <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                เมนูหลัก ({authSession.role === 'judge' ? 'โหมดกรรมการ' : authSession.role === 'admin' ? 'โหมดผู้ดูแลระบบ' : authSession.role === 'manager' ? 'โหมดผู้จัดการแข่งขัน' : authSession.role === 'school' ? 'โหมดโรงเรียน' : 'ทั่วไป'})
+                เมนูหลัก ({authSession.role === 'judge' ? 'โหมดกรรมการ' : authSession.role === 'admin' ? 'โหมดผู้ดูแลระบบ' : authSession.role === 'manager' ? 'โหมดผู้จัดการแข่งขัน' : authSession.role === 'registrar' ? 'โหมดเจ้าหน้าที่ลงทะเบียน' : authSession.role === 'school' ? 'โหมดโรงเรียน' : 'ทั่วไป'})
               </div>
               <button
                 type="button"
@@ -14276,7 +15757,7 @@ export default function App() {
             </nav>
           </div>
 
-          {/* Sidebar: สถานะของผู้ใช้ และการเข้าสู่ระบบทั้ง 4 ระบบ */}
+          {/* Sidebar: สถานะของผู้ใช้ และปุ่มเข้าสู่ระบบแยกตามบทบาท */}
           <div className="mt-4 pt-4 border-t border-slate-200/80">
             <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 px-2 mb-2">
               สถานะของผู้ใช้
@@ -14289,6 +15770,8 @@ export default function App() {
                       ? 'bg-gradient-to-br from-amber-500 to-orange-600'
                       : authSession.role === 'manager'
                       ? 'bg-gradient-to-br from-violet-500 to-purple-600'
+                      : authSession.role === 'registrar'
+                      ? 'bg-gradient-to-br from-indigo-500 to-blue-600'
                       : authSession.role === 'school'
                       ? 'bg-gradient-to-br from-emerald-500 to-teal-600'
                       : authSession.role === 'judge'
@@ -14300,6 +15783,8 @@ export default function App() {
                     <ShieldCheck className="w-5 h-5" />
                   ) : authSession.role === 'manager' ? (
                     <FileText className="w-5 h-5" />
+                  ) : authSession.role === 'registrar' ? (
+                    <ClipboardCheck className="w-5 h-5" />
                   ) : authSession.role === 'school' ? (
                     <School className="w-5 h-5" />
                   ) : authSession.role === 'judge' ? (
@@ -14323,6 +15808,8 @@ export default function App() {
                         ? 'ผู้ดูแลระบบ (Admin)'
                         : authSession.role === 'manager'
                         ? 'ผู้จัดการแข่งขัน'
+                        : authSession.role === 'registrar'
+                        ? 'เจ้าหน้าที่ลงทะเบียน'
                         : authSession.role === 'school'
                         ? `โรงเรียน (${currentSchool?.schoolCode || 'School'})`
                         : authSession.role === 'judge'
@@ -14344,48 +15831,32 @@ export default function App() {
                 </button>
               )}
 
-              <div className="pt-2 border-t border-slate-200/80 space-y-1.5">
-                <button
-                  type="button"
-                  aria-expanded={loginMenuExpanded}
-                  onClick={() => setLoginMenuExpanded((prev) => !prev)}
-                  className="w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded-xl text-[11px] font-bold text-slate-600 hover:bg-white/80 hover:text-slate-900 transition cursor-pointer"
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <LogIn className="w-3.5 h-3.5 text-amber-600" />
-                    <span>การเข้าสู่ระบบทั้ง 4 ระบบ</span>
-                  </span>
-                  {loginMenuExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-                </button>
-
-                {loginMenuExpanded && (
-                  <div className="space-y-1">
-                    {[
-                      { id: 'login-admin', label: 'ผู้ดูแลระบบ', icon: ShieldCheck, activeCls: 'bg-orange-100/80 text-orange-800 border-orange-300', iconCls: 'text-orange-600' },
-                      { id: 'login-manager', label: 'ผู้จัดการแข่งขัน', icon: FileText, activeCls: 'bg-violet-100/80 text-violet-800 border-violet-300', iconCls: 'text-violet-600' },
-                      { id: 'login-school', label: 'ระบบโรงเรียน', icon: School, activeCls: 'bg-emerald-100/80 text-emerald-800 border-emerald-300', iconCls: 'text-emerald-600' },
-                      { id: 'login-judge', label: 'ระบบกรรมการ', icon: Gavel, activeCls: 'bg-sky-100/80 text-sky-800 border-sky-300', iconCls: 'text-sky-600' }
-                    ].map((sub) => {
-                      const SubIcon = sub.icon;
-                      const subActive = activeMenu === sub.id;
-                      return (
-                        <button
-                          key={sub.id}
-                          type="button"
-                          onClick={() => handleSelectMenu(sub.id)}
-                          className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-xl text-xs font-bold transition text-left cursor-pointer border ${
-                            subActive
-                              ? sub.activeCls
-                              : 'border-transparent bg-white/70 text-slate-600 hover:bg-white hover:text-slate-900'
-                          }`}
-                        >
-                          <SubIcon className={`w-3.5 h-3.5 shrink-0 ${sub.iconCls}`} />
-                          <span className="truncate">{sub.label}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
+              <div className="pt-2 border-t border-slate-200/80 space-y-1">
+                {[
+                  { id: 'login-admin', label: 'ผู้ดูแลระบบ', icon: ShieldCheck, activeCls: 'bg-orange-100/80 text-orange-800 border-orange-300', iconCls: 'text-orange-600' },
+                  { id: 'login-manager', label: 'ผู้จัดการแข่งขัน', icon: FileText, activeCls: 'bg-violet-100/80 text-violet-800 border-violet-300', iconCls: 'text-violet-600' },
+                  { id: 'login-registrar', label: 'เจ้าหน้าที่ลงทะเบียน', icon: ClipboardCheck, activeCls: 'bg-indigo-100/80 text-indigo-800 border-indigo-300', iconCls: 'text-indigo-600' },
+                  { id: 'login-school', label: 'ระบบโรงเรียน', icon: School, activeCls: 'bg-emerald-100/80 text-emerald-800 border-emerald-300', iconCls: 'text-emerald-600' },
+                  { id: 'login-judge', label: 'ระบบกรรมการ', icon: Gavel, activeCls: 'bg-sky-100/80 text-sky-800 border-sky-300', iconCls: 'text-sky-600' }
+                ].map((sub) => {
+                  const SubIcon = sub.icon;
+                  const subActive = activeMenu === sub.id;
+                  return (
+                    <button
+                      key={sub.id}
+                      type="button"
+                      onClick={() => handleSelectMenu(sub.id)}
+                      className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-xl text-xs font-bold transition text-left cursor-pointer border ${
+                        subActive
+                          ? sub.activeCls
+                          : 'border-transparent bg-white/70 text-slate-600 hover:bg-white hover:text-slate-900'
+                      }`}
+                    >
+                      <SubIcon className={`w-3.5 h-3.5 shrink-0 ${sub.iconCls}`} />
+                      <span className="truncate">{sub.label}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </div>

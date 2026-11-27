@@ -387,6 +387,7 @@ button, input, select, textarea {
 
 .account-avatar.admin { background: linear-gradient(135deg, #f59e0b, #ea580c); }
 .account-avatar.manager { background: linear-gradient(135deg, #8b5cf6, #7c3aed); }
+.account-avatar.registrar { background: linear-gradient(135deg, #6366f1, #4f46e5); }
 .account-avatar.school { background: linear-gradient(135deg, #10b981, #0d9488); }
 .account-avatar.judge { background: linear-gradient(135deg, #0ea5e9, #4f46e5); }
 .account-avatar.guest { background: #94a3b8; }
@@ -819,6 +820,11 @@ button, input, select, textarea {
   color: #6d28d9;
   font-weight: 700;
 }
+.nav-subbtn.active-registrar {
+  background: #eef2ff;
+  color: #4338ca;
+  font-weight: 700;
+}
 .nav-subbtn.active-school {
   background: #ecfdf5;
   color: #047857;
@@ -874,11 +880,16 @@ button, input, select, textarea {
 }
 .role-choice-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 14px;
   margin-top: 18px;
 }
-@media (max-width: 960px) {
+@media (max-width: 1080px) {
+  .role-choice-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 720px) {
   .role-choice-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

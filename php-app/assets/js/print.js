@@ -56,13 +56,18 @@
     return 'เลขที่ จอ.0010.มฆ_' + roleCode + '_' + padded + ' /2570';
   }
 
-  function calculateNormalizedScore(scoresObj) {
+  function calculateNormalizedScore(scoresObj, recusedForReg) {
     if (!scoresObj || typeof scoresObj !== 'object') {
       return { average100: 0, judgeCount: 0, rawSum: 0 };
     }
-    const vals = Object.values(scoresObj).filter(function (v) {
-      return typeof v === 'number' && !Number.isNaN(v);
-    });
+    const vals = Object.entries(scoresObj)
+      .filter(function (entry) {
+        const jId = entry[0];
+        const v = entry[1];
+        if (recusedForReg && recusedForReg[jId]) return false;
+        return typeof v === 'number' && !Number.isNaN(v);
+      })
+      .map(function (entry) { return entry[1]; });
     if (vals.length === 0) return { average100: 0, judgeCount: 0, rawSum: 0 };
     const rawSum = vals.reduce(function (a, b) { return a + b; }, 0);
     return {

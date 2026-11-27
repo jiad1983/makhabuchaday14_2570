@@ -19,6 +19,7 @@ function getStoreFiles(): array
         'schools' => DATA_DIR . DIRECTORY_SEPARATOR . 'schools.json',
         'judges' => DATA_DIR . DIRECTORY_SEPARATOR . 'judges.json',
         'managers' => DATA_DIR . DIRECTORY_SEPARATOR . 'managers.json',
+        'registrars' => DATA_DIR . DIRECTORY_SEPARATOR . 'registrars.json',
         'schedules' => DATA_DIR . DIRECTORY_SEPARATOR . 'schedules.json',
         'registrations' => DATA_DIR . DIRECTORY_SEPARATOR . 'registrations.json',
         'scores' => DATA_DIR . DIRECTORY_SEPARATOR . 'scores.json',
@@ -303,6 +304,8 @@ function getDbDefaults(): array
         ],
         'schools' => [],
         'judges' => [],
+        'managers' => [],
+        'registrars' => [],
         'schedules' => buildInitialSchedules(),
         'registrations' => [],
         'scores' => [],
@@ -312,6 +315,7 @@ function getDbDefaults(): array
         'checkIns' => [],
         'evalMeta' => [],
         'absentRegs' => [],
+        'recusedJudges' => [],
         'customCriteriaByComp' => $criteriaMap,
     ];
 }
@@ -531,8 +535,10 @@ function createInitialDb(): array
             ],
         ],
         'absentRegs' => new stdClass(),
+        'recusedJudges' => new stdClass(),
         'customCriteriaByComp' => $criteriaMap,
         'managers' => [],
+        'registrars' => [],
     ];
 }
 
@@ -581,12 +587,12 @@ function hydrateDbShape(array $decoded): array
     } else {
         $decoded['registrationOpen'] = (bool)$decoded['registrationOpen'];
     }
-    foreach (['schools', 'judges', 'managers', 'registrations'] as $arrKey) {
+    foreach (['schools', 'judges', 'managers', 'registrars', 'registrations'] as $arrKey) {
         if (!isset($decoded[$arrKey]) || !is_array($decoded[$arrKey])) {
             $decoded[$arrKey] = $defaults[$arrKey];
         }
     }
-    foreach (['scores', 'scoreCriteriaDetails', 'roundScores', 'roundScoreCriteriaDetails', 'checkIns', 'evalMeta', 'absentRegs', 'customCriteriaByComp'] as $objKey) {
+    foreach (['scores', 'scoreCriteriaDetails', 'roundScores', 'roundScoreCriteriaDetails', 'checkIns', 'evalMeta', 'absentRegs', 'recusedJudges', 'customCriteriaByComp'] as $objKey) {
         if (!isset($decoded[$objKey]) || !is_array($decoded[$objKey])) {
             $decoded[$objKey] = $defaults[$objKey];
         }
@@ -612,6 +618,7 @@ function loadDb(): array
         $schools = readJsonFileLocked($store['schools']);
         $judges = readJsonFileLocked($store['judges']);
         $managers = readJsonFileLocked($store['managers']);
+        $registrars = readJsonFileLocked($store['registrars']);
         $schedules = readJsonFileLocked($store['schedules']);
         $registrations = readJsonFileLocked($store['registrations']);
         $scoreBundle = readJsonFileLocked($store['scores']) ?? [];
@@ -625,6 +632,7 @@ function loadDb(): array
             'schools' => is_array($schools) ? $schools : [],
             'judges' => is_array($judges) ? $judges : [],
             'managers' => is_array($managers) ? $managers : [],
+            'registrars' => is_array($registrars) ? $registrars : [],
             'schedules' => is_array($schedules) ? $schedules : [],
             'registrations' => is_array($registrations) ? $registrations : [],
             'scores' => is_array($scoreBundle['scores'] ?? null) ? $scoreBundle['scores'] : [],
@@ -634,6 +642,7 @@ function loadDb(): array
             'checkIns' => is_array($scoreBundle['checkIns'] ?? null) ? $scoreBundle['checkIns'] : [],
             'evalMeta' => is_array($scoreBundle['evalMeta'] ?? null) ? $scoreBundle['evalMeta'] : [],
             'absentRegs' => is_array($scoreBundle['absentRegs'] ?? null) ? $scoreBundle['absentRegs'] : [],
+            'recusedJudges' => is_array($scoreBundle['recusedJudges'] ?? null) ? $scoreBundle['recusedJudges'] : [],
             'customCriteriaByComp' => is_array($criteria) ? $criteria : [],
         ];
         return hydrateDbShape($combined);
@@ -657,7 +666,7 @@ function loadDb(): array
 
 function normalizeJsonMaps(array $db): array
 {
-    $mapKeys = ['schedules', 'menuPermissions', 'backgrounds', 'scores', 'scoreCriteriaDetails', 'roundScores', 'roundScoreCriteriaDetails', 'checkIns', 'evalMeta', 'absentRegs', 'customCriteriaByComp'];
+    $mapKeys = ['schedules', 'menuPermissions', 'backgrounds', 'scores', 'scoreCriteriaDetails', 'roundScores', 'roundScoreCriteriaDetails', 'checkIns', 'evalMeta', 'absentRegs', 'recusedJudges', 'customCriteriaByComp'];
     foreach ($mapKeys as $k) {
         if (!isset($db[$k]) || (is_array($db[$k]) && count($db[$k]) === 0)) {
             $db[$k] = new stdClass();
@@ -689,12 +698,14 @@ function saveDb(array $db): bool
         'checkIns' => $asObj($normalized['checkIns'] ?? []),
         'evalMeta' => $asObj($normalized['evalMeta'] ?? []),
         'absentRegs' => $asObj($normalized['absentRegs'] ?? []),
+        'recusedJudges' => $asObj($normalized['recusedJudges'] ?? []),
     ];
 
     $ok = writeJsonFileAtomic($store['system'], $systemDoc)
         && writeJsonFileAtomic($store['schools'], array_values((array)($normalized['schools'] ?? [])))
         && writeJsonFileAtomic($store['judges'], array_values((array)($normalized['judges'] ?? [])))
         && writeJsonFileAtomic($store['managers'], array_values((array)($normalized['managers'] ?? [])))
+        && writeJsonFileAtomic($store['registrars'], array_values((array)($normalized['registrars'] ?? [])))
         && writeJsonFileAtomic($store['schedules'], $asObj($normalized['schedules'] ?? []))
         && writeJsonFileAtomic($store['registrations'], array_values((array)($normalized['registrations'] ?? [])))
         && writeJsonFileAtomic($store['scores'], $scoresDoc)
@@ -762,6 +773,7 @@ function getStorageStats(array $db): array
             'schools' => count($db['schools'] ?? []),
             'judges' => count($db['judges'] ?? []),
             'managers' => count($db['managers'] ?? []),
+            'registrars' => count($db['registrars'] ?? []),
             'registrations' => count($db['registrations'] ?? []),
             'schedules' => is_array($db['schedules'] ?? null) ? count($db['schedules']) : 0,
             'scores' => is_array($db['scores'] ?? null) ? count($db['scores']) : 0,
@@ -858,6 +870,7 @@ function sanitizeJudgeForClient(array $judge, string $role, ?string $currentJudg
         'competitionId' => (string)($judge['competitionId'] ?? 'comp-1'),
         'level' => (string)($judge['level'] ?? ''),
         'photoUrl' => (string)($judge['photoUrl'] ?? ''),
+        'schoolId' => (string)($judge['schoolId'] ?? ''),
     ];
     if ($role === 'admin' || ($role === 'judge' && $currentJudgeId === $out['id'])) {
         $out['canPrintCard'] = true;
@@ -872,6 +885,16 @@ function sanitizeManagerForClient(array $mgr): array
         'username' => (string)($mgr['username'] ?? ''),
         'name' => (string)($mgr['name'] ?? ''),
         'phone' => (string)($mgr['phone'] ?? ''),
+    ];
+}
+
+function sanitizeRegistrarForClient(array $reg): array
+{
+    return [
+        'id' => (string)($reg['id'] ?? ''),
+        'username' => (string)($reg['username'] ?? ''),
+        'name' => (string)($reg['name'] ?? ''),
+        'phone' => (string)($reg['phone'] ?? ''),
     ];
 }
 
@@ -925,6 +948,20 @@ function buildClientPayload(array $db, array $auth): array
         } else {
             $auth['displayName'] = (string)$found['name'];
         }
+    } elseif ($role === 'registrar') {
+        $found = null;
+        foreach (($db['registrars'] ?? []) as $regUser) {
+            if (($regUser['id'] ?? '') === $currentUserId) {
+                $found = $regUser;
+                break;
+            }
+        }
+        if (!$found) {
+            $auth = ['role' => 'guest', 'userId' => null, 'displayName' => 'ผู้เยี่ยมชมทั่วไป', 'schoolId' => null, 'judgeId' => null];
+            $role = 'guest';
+        } else {
+            $auth['displayName'] = (string)$found['name'];
+        }
     } elseif ($role === 'admin') {
         $auth['displayName'] = (string)($db['adminCredentials']['displayName'] ?? 'ผู้ดูแลระบบ');
     }
@@ -940,9 +977,13 @@ function buildClientPayload(array $db, array $auth): array
     }
 
     $managersOut = [];
+    $registrarsOut = [];
     if ($role === 'admin') {
         foreach (($db['managers'] ?? []) as $mgr) {
             $managersOut[] = sanitizeManagerForClient($mgr);
+        }
+        foreach (($db['registrars'] ?? []) as $regUser) {
+            $registrarsOut[] = sanitizeRegistrarForClient($regUser);
         }
     }
 
@@ -969,6 +1010,7 @@ function buildClientPayload(array $db, array $auth): array
         'schools' => $schoolsOut,
         'judges' => $judgesOut,
         'managers' => $managersOut,
+        'registrars' => $registrarsOut,
         'schedules' => $asObj($db['schedules'] ?? []),
         'registrations' => $db['registrations'],
         'scores' => $asObj($db['scores'] ?? []),
@@ -978,6 +1020,7 @@ function buildClientPayload(array $db, array $auth): array
         'checkIns' => $asObj($db['checkIns'] ?? []),
         'evalMeta' => $asObj($db['evalMeta'] ?? []),
         'absentRegs' => $asObj($db['absentRegs'] ?? []),
+        'recusedJudges' => $asObj($db['recusedJudges'] ?? []),
         'customCriteriaByComp' => $asObj($db['customCriteriaByComp'] ?? []),
         'storageStats' => $role === 'admin' ? getStorageStats($db) : null,
     ];
